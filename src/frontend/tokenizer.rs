@@ -24,33 +24,19 @@ impl Tokenizer {
                     // Collect digits into the current number
                     current_num.push(c);
                 }
-                '+' => {
+                '+' | '-' | ' ' => {
                     // If we have collected digits, convert them to a token
                     if !current_num.is_empty() {
                         let num = current_num.parse::<i64>().map_err(|e| e.to_string())?;
                         tokens.push(Token::Number(num));
                         current_num.clear();
                     }
-                    tokens.push(Token::Plus);
-                }
-                '-' => {
-                    // If we have collected digits, convert them to a token
-                    if !current_num.is_empty() {
-                        let num = current_num.parse::<i64>().map_err(|e| e.to_string())?;
-                        tokens.push(Token::Number(num));
-                        current_num.clear();
+                    match c {
+                        '+' => tokens.push(Token::Plus),
+                        '-' => tokens.push(Token::Minus),
+                        ' ' => continue,
+                        _ => unreachable!(),
                     }
-                    tokens.push(Token::Minus);
-                }
-                ' ' => {
-                    // If we have collected digits, convert them to a token
-                    if !current_num.is_empty() {
-                        let num = current_num.parse::<i64>().map_err(|e| e.to_string())?;
-                        tokens.push(Token::Number(num));
-                        current_num.clear();
-                    }
-                    // Skip whitespace
-                    continue;
                 }
                 _ => return Err(format!("Invalid character: {}", c)),
             }
