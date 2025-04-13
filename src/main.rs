@@ -10,8 +10,8 @@ fn main() {
     // Parse the input expression
     let tokens: Vec<Token> = Tokenizer::tokenize(&cli.expression).expect("failed to tokenize");
 
-    let expr = match Parser::parse(&tokens) {
-        Ok(expr) => expr,
+    let program = match Parser::parse(&tokens) {
+        Ok(program) => program,
         Err(err) => {
             eprintln!("Error parsing expression: {}", err);
             std::process::exit(1);
@@ -24,7 +24,7 @@ fn main() {
     };
 
     // Generate assembly
-    let asm = backend.generate_assembly(&expr);
+    let asm = backend.generate_assembly(&program);
 
     // Print assembly
     println!("{}", asm);
