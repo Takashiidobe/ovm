@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use crate::optimizer::{Instr, Op, registers::Location};
-
-use x86_64::Codegen;
+use crate::optimizer::{Instr, registers::Location};
 
 pub mod x86_64;
 

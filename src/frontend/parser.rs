@@ -1,456 +1,581 @@
-use crate::frontend::tokenizer::Token;
+use crate::{
+    error::{Error, parser_error},
+    frontend::token::{Object, Token, TokenType},
+};
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    Num(i64),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    Mul(Box<Expr>, Box<Expr>),
-    Div(Box<Expr>, Box<Expr>),
-    Print(Box<Expr>),
+use super::{expr::Expr, stmt::Stmt};
+
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct Parser {
+    tokens: Vec<Token>,
+    current: usize,
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Program {
-    pub statements: Vec<Expr>,
-}
-
-pub struct Parser;
 
 impl Parser {
-    pub fn parse(tokens: &[Token]) -> Result<Program, String> {
-        if tokens.is_empty() {
-            return Err("No tokens to parse".to_string());
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self {
+            tokens,
+            ..Default::default()
+        }
+    }
+
+    pub fn parse(&mut self) -> Result<Vec<Stmt>, Error> {
+        let mut statements = vec![];
+        while !self.is_at_end() {
+            statements.push(self.declaration()?);
+        }
+        Ok(statements)
+    }
+
+    pub fn parse_exprs(&mut self) -> Result<Vec<Expr>, Error> {
+        let mut expressions = vec![];
+        while !self.is_at_end() {
+            expressions.push(self.expression()?);
+        }
+        Ok(expressions)
+    }
+
+    fn expression(&mut self) -> Result<Expr, Error> {
+        self.assignment()
+    }
+
+    fn declaration(&mut self) -> Result<Stmt, Error> {
+        let statement = if self.r#match(&[TokenType::Fun]) {
+            self.function("function")
+        } else if self.r#match(&[TokenType::Var]) {
+            self.var_declaration()
+        } else if self.r#match(&[TokenType::Class]) {
+            self.class_declaration()
+        } else if self.r#match(&[TokenType::If]) {
+            self.if_statement()
+        } else {
+            self.statement()
+        };
+
+        match statement {
+            Err(e) => {
+                self.synchronize();
+                Err(e)
+            }
+            stmt => stmt,
+        }
+    }
+
+    fn class_declaration(&mut self) -> Result<Stmt, Error> {
+        let name = self.consume(&TokenType::Identifier, "Expect class name.")?;
+        let superclass = if self.r#match(&[TokenType::Less]) {
+            self.consume(&TokenType::Identifier, "Expect superclass name.")?;
+            Some(self.previous().clone())
+        } else {
+            None
+        };
+
+        self.consume(&TokenType::LeftBrace, "Expect '{' before class body.")?;
+
+        let mut methods = vec![];
+
+        while !self.check(&TokenType::RightBrace) && !self.is_at_end() {
+            methods.push(self.function("method")?);
         }
 
-        let mut statements = Vec::new();
-        let mut position = 0;
+        self.consume(&TokenType::RightBrace, "Expect '}' after class body.")?;
 
-        while position < tokens.len() {
-            let (expr, next_pos) = Self::parse_expr(tokens, position)?;
-            statements.push(expr);
+        Ok(Stmt::Class {
+            name,
+            superclass: superclass.map(|name| Expr::Variable { name }),
+            methods,
+        })
+    }
 
-            // If we reached the end of the tokens, we're done
-            if next_pos >= tokens.len() {
+    fn if_statement(&mut self) -> Result<Stmt, Error> {
+        self.consume(&TokenType::LeftParen, "Expect '(' after 'if'.")?;
+        let condition = self.expression()?;
+        self.consume(&TokenType::RightParen, "Expect ')' after if condition.")?;
+
+        let then_branch = Box::new(self.statement()?);
+
+        let else_branch = Box::new(if self.r#match(&[TokenType::Else]) {
+            Some(self.statement()?)
+        } else {
+            None
+        });
+
+        Ok(Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        })
+    }
+
+    fn statement(&mut self) -> Result<Stmt, Error> {
+        if self.r#match(&[TokenType::Print]) {
+            self.print_statement()
+        } else if self.r#match(&[TokenType::Return]) {
+            self.return_statement()
+        } else if self.r#match(&[TokenType::For]) {
+            self.for_statement()
+        } else if self.r#match(&[TokenType::While]) {
+            self.while_statement()
+        } else if self.r#match(&[TokenType::LeftBrace]) {
+            Ok(Stmt::Block {
+                statements: self.block()?,
+            })
+        } else {
+            self.expression_statement()
+        }
+    }
+
+    fn return_statement(&mut self) -> Result<Stmt, Error> {
+        let keyword = self.previous();
+        let value = if !self.check(&TokenType::Semicolon) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+
+        self.consume(&TokenType::Semicolon, "Expect ';' after return value.")?;
+        Ok(Stmt::Return { keyword, value })
+    }
+
+    fn for_statement(&mut self) -> Result<Stmt, Error> {
+        self.consume(&TokenType::LeftParen, "Expect '(' after 'for'.")?;
+
+        let initializer = if self.r#match(&[TokenType::Semicolon]) {
+            None
+        } else if self.r#match(&[TokenType::Var]) {
+            Some(self.var_declaration()?)
+        } else {
+            Some(self.expression_statement()?)
+        };
+
+        let mut condition = if !self.check(&TokenType::Semicolon) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+
+        self.consume(&TokenType::Semicolon, "Expect ';' after loop condition.")?;
+
+        let increment = if !self.check(&TokenType::RightParen) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+
+        self.consume(&TokenType::RightParen, "Expect ')' after loop condition.")?;
+
+        let mut body = self.statement()?;
+
+        if let Some(incr) = increment {
+            body = Stmt::Block {
+                statements: vec![body, Stmt::Expression { expr: incr }],
+            };
+        }
+
+        if condition.is_none() {
+            condition = Some(Expr::Literal {
+                value: Object::Bool(true),
+            });
+        }
+
+        body = Stmt::While {
+            condition: condition.unwrap(),
+            body: Box::new(body),
+        };
+
+        if let Some(init) = initializer {
+            body = Stmt::Block {
+                statements: vec![init, body],
+            }
+        }
+
+        Ok(body)
+    }
+
+    fn print_statement(&mut self) -> Result<Stmt, Error> {
+        let expr = self.expression()?;
+        self.consume(&TokenType::Semicolon, "Expect ';' after value.")?;
+        Ok(Stmt::Print { expr })
+    }
+
+    fn var_declaration(&mut self) -> Result<Stmt, Error> {
+        let name = self.consume(&TokenType::Identifier, "Expect variable name.")?;
+
+        let initializer = if self.r#match(&[TokenType::Equal]) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+
+        self.consume(
+            &TokenType::Semicolon,
+            "Expect ';' after variable declaration.",
+        )?;
+
+        Ok(Stmt::Var { name, initializer })
+    }
+
+    fn while_statement(&mut self) -> Result<Stmt, Error> {
+        self.consume(&TokenType::LeftParen, "Expect '(' after 'while'.")?;
+        let condition = self.expression()?;
+        self.consume(&TokenType::RightParen, "Expect ')' after condition.")?;
+        let body = Box::new(self.statement()?);
+
+        Ok(Stmt::While { condition, body })
+    }
+
+    fn expression_statement(&mut self) -> Result<Stmt, Error> {
+        let expr = self.expression()?;
+        self.consume(&TokenType::Semicolon, "Expect ';' after value.")?;
+        Ok(Stmt::Expression { expr })
+    }
+
+    fn function(&mut self, kind: &str) -> Result<Stmt, Error> {
+        let name = self.consume(&TokenType::Identifier, &format!("Expect {kind} name."))?;
+        self.consume(
+            &TokenType::LeftParen,
+            &format!("Expect '(' after {kind} name."),
+        )?;
+
+        let mut params = vec![];
+
+        if !self.check(&TokenType::RightParen) {
+            loop {
+                if params.len() >= 255 {
+                    self.error(&self.peek(), "Cannot have more than 255 parameters.");
+                }
+                params.push(self.consume(&TokenType::Identifier, "Expect parameter name.")?);
+
+                if !self.r#match(&[TokenType::Comma]) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(&TokenType::RightParen, "Expect ')' after parameters.")?;
+
+        self.consume(
+            &TokenType::LeftBrace,
+            &format!("Expect '{{' before {} body.", kind),
+        )?;
+
+        let body = self.block()?;
+
+        Ok(Stmt::Function { name, params, body })
+    }
+
+    fn block(&mut self) -> Result<Vec<Stmt>, Error> {
+        let mut statements = vec![];
+
+        while !self.check(&TokenType::RightBrace) && !self.is_at_end() {
+            statements.push(self.declaration()?);
+        }
+
+        self.consume(&TokenType::RightBrace, "Expect '}' after block.")?;
+
+        Ok(statements)
+    }
+
+    fn assignment(&mut self) -> Result<Expr, Error> {
+        let expr = self.or()?;
+
+        if self.r#match(&[TokenType::Equal]) {
+            let equals = &self.previous();
+            let value = Box::new(self.assignment()?);
+
+            match expr {
+                Expr::Variable { name } => return Ok(Expr::Assign { name, value }),
+                Expr::Get { object, name } => {
+                    return Ok(Expr::Set {
+                        object,
+                        name,
+                        value,
+                    });
+                }
+                _ => return Err(self.error(equals, "Invalid assignment target.")),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn or(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.and()?;
+
+        while self.r#match(&[TokenType::Or]) {
+            let operator = self.previous();
+            let right = Box::new(self.and()?);
+            expr = Expr::Logical {
+                left: Box::new(expr),
+                operator,
+                right,
+            };
+        }
+
+        Ok(expr)
+    }
+
+    fn and(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.equality()?;
+
+        while self.r#match(&[TokenType::Or]) {
+            let operator = self.previous();
+            let right = Box::new(self.equality()?);
+            expr = Expr::Logical {
+                left: Box::new(expr),
+                operator,
+                right,
+            };
+        }
+
+        Ok(expr)
+    }
+
+    fn equality(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.comparison()?;
+
+        while self.r#match(&[TokenType::BangEqual, TokenType::EqualEqual]) {
+            let operator = self.previous();
+            let right = self.comparison()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn comparison(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.term()?;
+
+        while self.r#match(&[
+            TokenType::Greater,
+            TokenType::GreaterEqual,
+            TokenType::Less,
+            TokenType::LessEqual,
+        ]) {
+            let operator = self.previous();
+            let right = self.term()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn term(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.factor()?;
+
+        while self.r#match(&[TokenType::Minus, TokenType::Plus]) {
+            let operator = self.previous();
+            let right = self.factor()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn factor(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.unary()?;
+
+        while self.r#match(&[TokenType::Slash, TokenType::Star]) {
+            let operator = self.previous();
+            let right = self.unary()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn unary(&mut self) -> Result<Expr, Error> {
+        if self.r#match(&[TokenType::Bang, TokenType::Minus]) {
+            let operator = self.previous();
+            let right = self.unary()?;
+            Ok(Expr::Unary {
+                operator,
+                right: Box::new(right),
+            })
+        } else {
+            self.call()
+        }
+    }
+
+    fn finish_call(&mut self, callee: Expr) -> Result<Expr, Error> {
+        let mut arguments = vec![];
+
+        if !self.check(&TokenType::RightParen) {
+            loop {
+                arguments.push(self.expression()?);
+                if arguments.len() >= 255 {
+                    self.error(&self.peek(), "Can't have more than 255 arguments.");
+                }
+                if !self.r#match(&[TokenType::Comma]) {
+                    break;
+                }
+            }
+        }
+
+        let paren = self.consume(&TokenType::RightParen, "Expect ')' after arguments.")?;
+
+        Ok(Expr::Call {
+            callee: Box::new(callee),
+            paren,
+            arguments,
+        })
+    }
+
+    fn call(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.primary()?;
+
+        loop {
+            if self.r#match(&[TokenType::LeftParen]) {
+                expr = self.finish_call(expr)?;
+            } else if self.r#match(&[TokenType::Dot]) {
+                let name = self.consume(&TokenType::Identifier, "Expect property after '.'/")?;
+                expr = Expr::Get {
+                    object: Box::new(expr),
+                    name,
+                }
+            } else {
                 break;
             }
+        }
 
-            // Otherwise, we should have a semicolon
-            match tokens[next_pos] {
-                Token::Semicolon => {
-                    position = next_pos + 1; // Move past the semicolon
-                }
-                _ => {
-                    // If we didn't reach the end and don't have a semicolon, it's an error
-                    return Err(format!("Expected semicolon at position {}", next_pos));
-                }
+        Ok(expr)
+    }
+
+    fn primary(&mut self) -> Result<Expr, Error> {
+        let token = self.peek();
+
+        let expr = if self.r#match(&[TokenType::False]) {
+            Expr::Literal {
+                value: Object::Bool(false),
+            }
+        } else if self.r#match(&[TokenType::True]) {
+            Expr::Literal {
+                value: Object::Bool(true),
+            }
+        } else if self.r#match(&[TokenType::This]) {
+            Expr::This {
+                keyword: self.peek().clone(),
+            }
+        } else if self.r#match(&[TokenType::Nil]) {
+            Expr::Literal { value: Object::Nil }
+        } else if self.r#match(&[TokenType::String, TokenType::Integer, TokenType::Float]) {
+            Expr::Literal {
+                value: token.literal.unwrap_or_default(),
+            }
+        } else if self.r#match(&[TokenType::Identifier]) {
+            Expr::Variable {
+                name: self.previous().clone(),
+            }
+        } else if self.r#match(&[TokenType::LeftParen]) {
+            let expr = self.expression()?;
+            self.consume(&TokenType::RightParen, "Expected ')' after expression.")?;
+            Expr::Grouping {
+                expr: Box::new(expr),
+            }
+        } else if self.r#match(&[TokenType::Super]) {
+            let keyword = self.advance().clone();
+            self.consume(&TokenType::Dot, "Expect '.' after 'super'.")?;
+            let method = self.consume(&TokenType::Identifier, "Expect superclass method name.")?;
+
+            Expr::Super { keyword, method }
+        } else {
+            return Err(Error::Runtime {
+                token,
+                message: "Expected expression".to_string(),
+            });
+        };
+        Ok(expr)
+    }
+
+    fn r#match(&mut self, token_types: &[TokenType]) -> bool {
+        for token_type in token_types {
+            if self.check(token_type) {
+                self.advance();
+                return true;
             }
         }
-
-        if statements.is_empty() {
-            return Err("No valid statements found".to_string());
-        }
-
-        Ok(Program { statements })
+        false
     }
 
-    // Parse an expression with operator precedence
-    fn parse_expr(tokens: &[Token], pos: usize) -> Result<(Expr, usize), String> {
-        // Parse the first term
-        let (mut left, mut next_pos) = Self::parse_term(tokens, pos)?;
+    fn check(&mut self, token_type: &TokenType) -> bool {
+        if self.is_at_end() {
+            return false;
+        }
+        self.peek().r#type == *token_type
+    }
 
-        // Process remaining terms with + and - operators
-        while next_pos < tokens.len() {
-            match tokens[next_pos] {
-                Token::Plus => {
-                    let (right, new_pos) = Self::parse_term(tokens, next_pos + 1)?;
-                    left = Expr::Add(Box::new(left), Box::new(right));
-                    next_pos = new_pos;
-                }
-                Token::Minus => {
-                    let (right, new_pos) = Self::parse_term(tokens, next_pos + 1)?;
-                    left = Expr::Sub(Box::new(left), Box::new(right));
-                    next_pos = new_pos;
-                }
-                _ => break, // Not a + or - operator, end of expression
+    fn advance(&mut self) -> Token {
+        if !self.is_at_end() {
+            self.current += 1;
+        }
+        self.previous()
+    }
+
+    fn is_at_end(&self) -> bool {
+        self.peek().r#type == TokenType::Eof
+    }
+
+    fn peek(&self) -> Token {
+        self.tokens[self.current].clone()
+    }
+
+    fn previous(&self) -> Token {
+        self.tokens[self.current - 1].clone()
+    }
+
+    fn consume(&mut self, token_type: &TokenType, message: &str) -> Result<Token, Error> {
+        if self.check(token_type) {
+            Ok(self.advance().clone())
+        } else {
+            Err(self.error(&self.peek(), message))
+        }
+    }
+
+    fn synchronize(&mut self) {
+        self.advance();
+
+        while !self.is_at_end() {
+            if self.previous().r#type == TokenType::Semicolon {
+                return;
             }
-        }
 
-        Ok((left, next_pos))
-    }
-
-    // Parse a term (multiplication and division)
-    fn parse_term(tokens: &[Token], pos: usize) -> Result<(Expr, usize), String> {
-        // Parse the first factor
-        let (mut left, mut next_pos) = Self::parse_factor(tokens, pos)?;
-
-        // Process remaining factors with * and / operators
-        while next_pos < tokens.len() {
-            match tokens[next_pos] {
-                Token::Multiply => {
-                    let (right, new_pos) = Self::parse_factor(tokens, next_pos + 1)?;
-                    left = Expr::Mul(Box::new(left), Box::new(right));
-                    next_pos = new_pos;
-                }
-                Token::Divide => {
-                    let (right, new_pos) = Self::parse_factor(tokens, next_pos + 1)?;
-                    left = Expr::Div(Box::new(left), Box::new(right));
-                    next_pos = new_pos;
-                }
-                _ => break, // Not a * or / operator, end of term
+            match self.peek().r#type {
+                TokenType::Class
+                | TokenType::Fun
+                | TokenType::Var
+                | TokenType::For
+                | TokenType::If
+                | TokenType::While
+                | TokenType::Print
+                | TokenType::Return => return,
+                _ => {}
             }
-        }
 
-        Ok((left, next_pos))
-    }
-
-    // Parse a factor (numbers or parenthesized expressions)
-    fn parse_factor(tokens: &[Token], pos: usize) -> Result<(Expr, usize), String> {
-        if pos >= tokens.len() {
-            return Err("Unexpected end of expression".to_string());
-        }
-
-        match &tokens[pos] {
-            Token::Print => {
-                // We expect the next token to be an open parenthesis
-                if pos + 1 >= tokens.len() {
-                    return Err("Expected expression after 'print'".to_string());
-                }
-
-                // Parse the expression inside print()
-                let (expr, next_pos) = Self::parse_expr(tokens, pos + 1)?;
-
-                Ok((Expr::Print(Box::new(expr)), next_pos))
-            }
-            Token::Number(n) => Ok((Expr::Num(*n), pos + 1)),
-            Token::LeftParen => {
-                // Parse a parenthesized expression
-                let (expr, next_pos) = Self::parse_expr(tokens, pos + 1)?;
-
-                // Ensure there's a matching right parenthesis
-                if next_pos >= tokens.len() {
-                    return Err("Missing closing parenthesis".to_string());
-                }
-                match &tokens[next_pos] {
-                    Token::RightParen => Ok((expr, next_pos + 1)),
-                    _ => Err("Expected closing parenthesis".to_string()),
-                }
-            }
-            _ => Err(format!(
-                "Expected number or opening parenthesis at position {}",
-                pos
-            )),
+            self.advance();
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::frontend::tokenizer::{Token, Tokenizer};
-
-    #[test]
-    fn test_parse_single_number() {
-        let tokens = vec![Token::Number(123)];
-        let program = Parser::parse(&tokens).unwrap();
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(program.statements[0], Expr::Num(123));
-    }
-
-    #[test]
-    fn test_parse_addition() {
-        let tokens = vec![Token::Number(123), Token::Plus, Token::Number(456)];
-        let program = Parser::parse(&tokens).unwrap();
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Add(Box::new(Expr::Num(123)), Box::new(Expr::Num(456)))
-        );
-    }
-
-    #[test]
-    fn test_parse_subtraction() {
-        let tokens = vec![Token::Number(123), Token::Minus, Token::Number(456)];
-        let program = Parser::parse(&tokens).unwrap();
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Sub(Box::new(Expr::Num(123)), Box::new(Expr::Num(456)))
-        );
-    }
-
-    #[test]
-    fn test_parse_multiplication() {
-        let tokens = vec![Token::Number(123), Token::Multiply, Token::Number(456)];
-        let program = Parser::parse(&tokens).unwrap();
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Mul(Box::new(Expr::Num(123)), Box::new(Expr::Num(456)))
-        );
-    }
-
-    #[test]
-    fn test_parse_division() {
-        let tokens = vec![Token::Number(123), Token::Divide, Token::Number(456)];
-        let program = Parser::parse(&tokens).unwrap();
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Div(Box::new(Expr::Num(123)), Box::new(Expr::Num(456)))
-        );
-    }
-
-    #[test]
-    fn test_parse_complex() {
-        // 123 + 456 - 789
-        // This should be parsed as ((123 + 456) - 789) due to left-to-right evaluation
-        let tokens = vec![
-            Token::Number(123),
-            Token::Plus,
-            Token::Number(456),
-            Token::Minus,
-            Token::Number(789),
-        ];
-
-        let program = Parser::parse(&tokens).unwrap();
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Sub(
-                Box::new(Expr::Add(
-                    Box::new(Expr::Num(123)),
-                    Box::new(Expr::Num(456))
-                )),
-                Box::new(Expr::Num(789))
-            )
-        );
-    }
-
-    #[test]
-    fn test_parse_operator_precedence() {
-        // 123 + 456 * 789
-        // This should be parsed as (123 + (456 * 789)) due to operator precedence
-        let tokens = vec![
-            Token::Number(123),
-            Token::Plus,
-            Token::Number(456),
-            Token::Multiply,
-            Token::Number(789),
-        ];
-
-        let program = Parser::parse(&tokens).unwrap();
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Add(
-                Box::new(Expr::Num(123)),
-                Box::new(Expr::Mul(
-                    Box::new(Expr::Num(456)),
-                    Box::new(Expr::Num(789))
-                ))
-            )
-        );
-    }
-
-    #[test]
-    fn test_parse_mixed_precedence() {
-        // 10 * 20 + 30 / 5
-        // This should be parsed as ((10 * 20) + (30 / 5))
-        let tokens = vec![
-            Token::Number(10),
-            Token::Multiply,
-            Token::Number(20),
-            Token::Plus,
-            Token::Number(30),
-            Token::Divide,
-            Token::Number(5),
-        ];
-
-        let program = Parser::parse(&tokens).unwrap();
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Add(
-                Box::new(Expr::Mul(Box::new(Expr::Num(10)), Box::new(Expr::Num(20)))),
-                Box::new(Expr::Div(Box::new(Expr::Num(30)), Box::new(Expr::Num(5))))
-            )
-        );
-    }
-
-    #[test]
-    fn test_parse_invalid_sequence() {
-        let tokens = vec![Token::Number(123), Token::Plus, Token::Plus];
-        assert!(Parser::parse(&tokens).is_err());
-    }
-
-    // Integration test that uses both tokenizer and parser
-    #[test]
-    fn test_tokenize_and_parse() {
-        let input = "123 + 456 - 789";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Sub(
-                Box::new(Expr::Add(
-                    Box::new(Expr::Num(123)),
-                    Box::new(Expr::Num(456))
-                )),
-                Box::new(Expr::Num(789))
-            )
-        );
-    }
-
-    #[test]
-    fn test_tokenize_and_parse_with_precedence() {
-        let input = "2 + 3 * 4";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Add(
-                Box::new(Expr::Num(2)),
-                Box::new(Expr::Mul(Box::new(Expr::Num(3)), Box::new(Expr::Num(4))))
-            )
-        );
-    }
-
-    #[test]
-    fn test_parse_parentheses() {
-        let input = "(2 + 3) * 4";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Mul(
-                Box::new(Expr::Add(Box::new(Expr::Num(2)), Box::new(Expr::Num(3)))),
-                Box::new(Expr::Num(4))
-            )
-        );
-    }
-
-    #[test]
-    fn test_parse_nested_parentheses() {
-        let input = "2 * (3 + (4 - 1))";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Mul(
-                Box::new(Expr::Num(2)),
-                Box::new(Expr::Add(
-                    Box::new(Expr::Num(3)),
-                    Box::new(Expr::Sub(Box::new(Expr::Num(4)), Box::new(Expr::Num(1))))
-                ))
-            )
-        );
-    }
-
-    #[test]
-    fn test_multiple_statements() {
-        let input = "1; 2; 3";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 3);
-        assert_eq!(program.statements[0], Expr::Num(1));
-        assert_eq!(program.statements[1], Expr::Num(2));
-        assert_eq!(program.statements[2], Expr::Num(3));
-    }
-
-    #[test]
-    fn test_complex_multiple_statements() {
-        let input = "1 + 2; 3 * 4; 5 - 6";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 3);
-        assert_eq!(
-            program.statements[0],
-            Expr::Add(Box::new(Expr::Num(1)), Box::new(Expr::Num(2)))
-        );
-        assert_eq!(
-            program.statements[1],
-            Expr::Mul(Box::new(Expr::Num(3)), Box::new(Expr::Num(4)))
-        );
-        assert_eq!(
-            program.statements[2],
-            Expr::Sub(Box::new(Expr::Num(5)), Box::new(Expr::Num(6)))
-        );
-    }
-
-    #[test]
-    fn test_statements_with_parentheses() {
-        let input = "(1 + 2) * 3; 4 + (5 * 6)";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 2);
-        assert_eq!(
-            program.statements[0],
-            Expr::Mul(
-                Box::new(Expr::Add(Box::new(Expr::Num(1)), Box::new(Expr::Num(2)))),
-                Box::new(Expr::Num(3))
-            )
-        );
-        assert_eq!(
-            program.statements[1],
-            Expr::Add(
-                Box::new(Expr::Num(4)),
-                Box::new(Expr::Mul(Box::new(Expr::Num(5)), Box::new(Expr::Num(6))))
-            )
-        );
-    }
-
-    #[test]
-    fn test_parse_print() {
-        let input = "print(123)";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(program.statements[0], Expr::Print(Box::new(Expr::Num(123))));
-    }
-
-    #[test]
-    fn test_parse_complex_print() {
-        let input = "print(10 + 20 * 30)";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Print(Box::new(Expr::Add(
-                Box::new(Expr::Num(10)),
-                Box::new(Expr::Mul(Box::new(Expr::Num(20)), Box::new(Expr::Num(30))))
-            )))
-        );
-    }
-
-    #[test]
-    fn test_multiple_prints() {
-        let input = "print(1); print(2 + 3)";
-        let tokens = Tokenizer::tokenize(input).unwrap();
-        let program = Parser::parse(&tokens).unwrap();
-
-        assert_eq!(program.statements.len(), 2);
-        assert_eq!(program.statements[0], Expr::Print(Box::new(Expr::Num(1))));
-        assert_eq!(
-            program.statements[1],
-            Expr::Print(Box::new(Expr::Add(
-                Box::new(Expr::Num(2)),
-                Box::new(Expr::Num(3))
-            )))
-        );
+    fn error(&self, token: &Token, message: &str) -> Error {
+        parser_error(token, message);
+        Error::Parse {
+            token: token.clone(),
+            message: message.to_string(),
+        }
     }
 }

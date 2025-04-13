@@ -1,6 +1,10 @@
 pub mod registers;
 
-use crate::frontend::parser::Expr;
+use crate::frontend::{
+    expr::Expr,
+    stmt::Stmt,
+    token::{Object, TokenType},
+};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Instr {
@@ -29,55 +33,57 @@ impl SSA {
         name
     }
 
-    pub fn program_to_ir(&mut self, exprs: &[Expr]) -> Vec<Instr> {
+    pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
         let mut instrs = Vec::new();
-        for expr in exprs {
-            // We process each expression fully for side effects like `Print`.
-            self.expr_to_ir(expr, &mut instrs);
+        for stmt in stmts {
+            self.stmt_to_ir(stmt, &mut instrs);
         }
         instrs
     }
 
+    fn stmt_to_ir(&mut self, stmt: &Stmt, instrs: &mut Vec<Instr>) -> String {
+        match stmt {
+            Stmt::Expression { expr } => self.expr_to_ir(expr, instrs),
+            Stmt::Print { expr } => {
+                let to_print = self.expr_to_ir(expr, instrs);
+                instrs.push(Instr::Print(to_print.clone()));
+                to_print
+            }
+            _ => todo!(),
+        }
+    }
+
     fn expr_to_ir(&mut self, expr: &Expr, instrs: &mut Vec<Instr>) -> String {
         match expr {
-            Expr::Num(n) => {
+            Expr::Literal { value } => match value {
+                // TODO: support turning the other types into literals
+                Object::Integer(n) => {
+                    let temp = self.new_temp();
+                    instrs.push(Instr::Const(temp.clone(), *n));
+                    temp
+                }
+                _ => todo!(),
+            },
+            Expr::Binary {
+                left,
+                right,
+                operator,
+            } => {
+                let l = self.expr_to_ir(left, instrs);
+                let r = self.expr_to_ir(right, instrs);
                 let temp = self.new_temp();
-                instrs.push(Instr::Const(temp.clone(), *n));
+                let op = match operator.r#type {
+                    TokenType::Plus => Op::Add,
+                    TokenType::Minus => Op::Sub,
+                    TokenType::Star => Op::Mul,
+                    TokenType::Slash => Op::Div,
+                    _ => todo!(),
+                };
+                instrs.push(Instr::BinOp(temp.clone(), l, op, r));
                 temp
             }
-            Expr::Add(lhs, rhs) => {
-                let l = self.expr_to_ir(lhs, instrs);
-                let r = self.expr_to_ir(rhs, instrs);
-                let temp = self.new_temp();
-                instrs.push(Instr::BinOp(temp.clone(), l, Op::Add, r));
-                temp
-            }
-            Expr::Sub(lhs, rhs) => {
-                let l = self.expr_to_ir(lhs, instrs);
-                let r = self.expr_to_ir(rhs, instrs);
-                let temp = self.new_temp();
-                instrs.push(Instr::BinOp(temp.clone(), l, Op::Sub, r));
-                temp
-            }
-            Expr::Mul(lhs, rhs) => {
-                let l = self.expr_to_ir(lhs, instrs);
-                let r = self.expr_to_ir(rhs, instrs);
-                let temp = self.new_temp();
-                instrs.push(Instr::BinOp(temp.clone(), l, Op::Mul, r));
-                temp
-            }
-            Expr::Div(lhs, rhs) => {
-                let l = self.expr_to_ir(lhs, instrs);
-                let r = self.expr_to_ir(rhs, instrs);
-                let temp = self.new_temp();
-                instrs.push(Instr::BinOp(temp.clone(), l, Op::Div, r));
-                temp
-            }
-            Expr::Print(inner) => {
-                let value_temp = self.expr_to_ir(inner, instrs);
-                instrs.push(Instr::Print(value_temp.clone()));
-                value_temp // Returning for completeness
-            }
+            Expr::Grouping { expr } => self.expr_to_ir(expr, instrs),
+            e => panic!("{e:?}"),
         }
     }
 }
@@ -186,38 +192,6 @@ impl Optimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_ssa_translation_arithmetic_and_print() {
-        let exprs = vec![Expr::Print(Box::new(Expr::Add(
-            Box::new(Expr::Num(2)),
-            Box::new(Expr::Mul(Box::new(Expr::Num(3)), Box::new(Expr::Num(4)))),
-        )))];
-
-        let mut ssa = SSA::default();
-        let instrs = ssa.program_to_ir(&exprs);
-
-        let expected = vec![
-            Instr::Const("t0".to_string(), 2),
-            Instr::Const("t1".to_string(), 3),
-            Instr::Const("t2".to_string(), 4),
-            Instr::BinOp(
-                "t3".to_string(),
-                "t1".to_string(),
-                Op::Mul,
-                "t2".to_string(),
-            ),
-            Instr::BinOp(
-                "t4".to_string(),
-                "t0".to_string(),
-                Op::Add,
-                "t3".to_string(),
-            ),
-            Instr::Print("t4".to_string()),
-        ];
-
-        assert_eq!(instrs, expected);
-    }
 
     #[test]
     fn test_constant_folding() {
