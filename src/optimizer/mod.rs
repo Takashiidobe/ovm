@@ -13,12 +13,19 @@ pub enum Instr {
     Print(String),
 }
 
+#[non_exhaustive]
 #[derive(Debug, PartialEq, Clone)]
 pub enum Op {
     Add,
     Sub,
     Mul,
     Div,
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -77,6 +84,12 @@ impl SSA {
                     TokenType::Minus => Op::Sub,
                     TokenType::Star => Op::Mul,
                     TokenType::Slash => Op::Div,
+                    TokenType::EqualEqual => Op::Eq,
+                    TokenType::BangEqual => Op::Neq,
+                    TokenType::LessEqual => Op::Lte,
+                    TokenType::GreaterEqual => Op::Gte,
+                    TokenType::Less => Op::Lt,
+                    TokenType::Greater => Op::Gt,
                     _ => todo!(),
                 };
                 instrs.push(Instr::BinOp(temp.clone(), l, op, r));
@@ -136,6 +149,12 @@ impl Optimizer {
                                 Op::Sub => lv - rv,
                                 Op::Mul => lv * rv,
                                 Op::Div => lv / rv,
+                                Op::Eq => (lv == rv) as i64,
+                                Op::Neq => (lv != rv) as i64,
+                                Op::Lt => (lv < rv) as i64,
+                                Op::Lte => (lv <= rv) as i64,
+                                Op::Gt => (lv > rv) as i64,
+                                Op::Gte => (lv >= rv) as i64,
                             };
                             constants.insert(dest.clone(), result);
                             new_instrs.push(Instr::Const(dest, result));
@@ -243,6 +262,69 @@ mod tests {
         let expected = vec![
             Instr::Const("t2".to_string(), 5),
             Instr::Print("t2".to_string()),
+        ];
+
+        assert_eq!(optimized, expected);
+    }
+
+    #[test]
+    fn test_optimizer_relational_operators() {
+        let instrs = vec![
+            Instr::Const("t0".to_string(), 10),
+            Instr::Const("t1".to_string(), 20),
+            Instr::BinOp("t2".to_string(), "t0".to_string(), Op::Lt, "t1".to_string()), // 10 < 20 => true (1)
+            Instr::Const("t_unused".to_string(), 999),
+            Instr::Print("t2".to_string()),
+        ];
+
+        let optimizer = Optimizer;
+        let optimized = optimizer.run_all(instrs);
+
+        // After constant folding: t2 = 1
+        // Dead code elimination removes t0, t1, and t_unused
+        let expected = vec![
+            Instr::Const("t2".to_string(), 1),
+            Instr::Print("t2".to_string()),
+        ];
+
+        assert_eq!(optimized, expected);
+    }
+
+    #[test]
+    fn test_optimizer_full_chain_folding() {
+        let instrs = vec![
+            // Arithmetic chain: 4 + 5 = 9
+            Instr::Const("t0".to_string(), 4),
+            Instr::Const("t1".to_string(), 5),
+            Instr::BinOp(
+                "t2".to_string(),
+                "t0".to_string(),
+                Op::Add,
+                "t1".to_string(),
+            ),
+            // 9 * 2 = 18
+            Instr::Const("t3".to_string(), 2),
+            Instr::BinOp(
+                "t4".to_string(),
+                "t2".to_string(),
+                Op::Mul,
+                "t3".to_string(),
+            ),
+            // 18 == 18 => true (1)
+            Instr::Const("t5".to_string(), 18),
+            Instr::BinOp("t6".to_string(), "t4".to_string(), Op::Eq, "t5".to_string()),
+            // Dead code
+            Instr::Const("t_unused".to_string(), 999),
+            // Final print
+            Instr::Print("t6".to_string()),
+        ];
+
+        let optimizer = Optimizer;
+        let optimized = optimizer.run_all(instrs);
+
+        let expected = vec![
+            Instr::Const("t6".to_string(), 1), // final folded boolean result
+            Instr::Print("t6".to_string()),
         ];
 
         assert_eq!(optimized, expected);
