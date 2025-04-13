@@ -3,6 +3,8 @@ pub enum Token {
     Number(i64),
     Plus,
     Minus,
+    Multiply,
+    Divide,
 }
 
 pub struct Tokenizer;
@@ -24,7 +26,7 @@ impl Tokenizer {
                     // Collect digits into the current number
                     current_num.push(c);
                 }
-                '+' | '-' | ' ' => {
+                '+' | '-' | '*' | '/' | ' ' => {
                     // If we have collected digits, convert them to a token
                     if !current_num.is_empty() {
                         let num = current_num.parse::<i64>().map_err(|e| e.to_string())?;
@@ -34,6 +36,8 @@ impl Tokenizer {
                     match c {
                         '+' => tokens.push(Token::Plus),
                         '-' => tokens.push(Token::Minus),
+                        '*' => tokens.push(Token::Multiply),
+                        '/' => tokens.push(Token::Divide),
                         ' ' => continue,
                         _ => unreachable!(),
                     }
@@ -55,7 +59,7 @@ impl Tokenizer {
 
         // Check if expression starts with an operator
         match tokens.first() {
-            Some(Token::Plus) | Some(Token::Minus) => {
+            Some(Token::Plus) | Some(Token::Minus) | Some(Token::Multiply) | Some(Token::Divide) => {
                 return Err("Expression cannot start with an operator".to_string());
             }
             _ => {}
@@ -63,7 +67,7 @@ impl Tokenizer {
 
         // Check if expression ends with an operator
         match tokens.last() {
-            Some(Token::Plus) | Some(Token::Minus) => {
+            Some(Token::Plus) | Some(Token::Minus) | Some(Token::Multiply) | Some(Token::Divide) => {
                 return Err("Expression cannot end with an operator".to_string());
             }
             _ => {}
@@ -74,8 +78,20 @@ impl Tokenizer {
             match (&tokens[i], &tokens[i + 1]) {
                 (Token::Plus, Token::Plus)
                 | (Token::Plus, Token::Minus)
+                | (Token::Plus, Token::Multiply)
+                | (Token::Plus, Token::Divide)
                 | (Token::Minus, Token::Plus)
-                | (Token::Minus, Token::Minus) => {
+                | (Token::Minus, Token::Minus)
+                | (Token::Minus, Token::Multiply)
+                | (Token::Minus, Token::Divide)
+                | (Token::Multiply, Token::Plus)
+                | (Token::Multiply, Token::Minus)
+                | (Token::Multiply, Token::Multiply)
+                | (Token::Multiply, Token::Divide)
+                | (Token::Divide, Token::Plus)
+                | (Token::Divide, Token::Minus)
+                | (Token::Divide, Token::Multiply)
+                | (Token::Divide, Token::Divide) => {
                     return Err("Consecutive operators are not allowed".to_string());
                 }
                 _ => {}
@@ -123,6 +139,36 @@ mod tests {
                 Token::Plus,
                 Token::Number(456),
                 Token::Minus,
+                Token::Number(789)
+            ]
+        );
+    }
+    
+    #[test]
+    fn test_tokenize_multiplication() {
+        assert_eq!(
+            Tokenizer::tokenize("123 * 456").unwrap(),
+            vec![Token::Number(123), Token::Multiply, Token::Number(456)]
+        );
+    }
+    
+    #[test]
+    fn test_tokenize_division() {
+        assert_eq!(
+            Tokenizer::tokenize("123 / 456").unwrap(),
+            vec![Token::Number(123), Token::Divide, Token::Number(456)]
+        );
+    }
+    
+    #[test]
+    fn test_tokenize_mixed_operators() {
+        assert_eq!(
+            Tokenizer::tokenize("123 + 456 * 789").unwrap(),
+            vec![
+                Token::Number(123),
+                Token::Plus,
+                Token::Number(456),
+                Token::Multiply,
                 Token::Number(789)
             ]
         );

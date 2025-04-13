@@ -38,7 +38,28 @@ impl X86_64 {
                 asm.push_str("    pop %rax                 # Restore left operand\n");
                 asm.push_str("    sub %rcx, %rax           # rax = rax - rcx\n");
             }
+            Expr::Mul(left, right) => {
+                Self::generate_expr_code(left, asm);
+                asm.push_str("    push %rax                # Save left operand\n");
+                Self::generate_expr_code(right, asm);
+                asm.push_str("    pop %rcx                 # Restore left operand into rcx\n");
+                asm.push_str("    imul %rcx, %rax          # rax = rcx * rax\n");
+            }
+            Expr::Div(left, right) => {
+                Self::generate_expr_code(left, asm);
+                asm.push_str("    push %rax                # Save left operand (dividend)\n");
+                Self::generate_expr_code(right, asm);
+                asm.push_str(
+                    "    mov %rax, %rcx           # Move right operand (divisor) to rcx\n",
+                );
+                asm.push_str(
+                    "    pop %rax                 # Restore left operand (dividend) to rax\n",
+                );
+                asm.push_str("    cqo                      # Sign-extend RAX into RDX:RAX\n");
+                asm.push_str(
+                    "    idiv %rcx                # Divide RDX:RAX by RCX, result in RAX\n",
+                );
+            }
         }
     }
 }
-

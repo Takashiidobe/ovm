@@ -83,3 +83,38 @@ fn test_expression() {
     compiler.run_and_check_exit_code(expected_result);
 }
 
+#[test]
+fn test_multiplication() {
+    let expression = "5*4";
+    let expected_result = 20;
+
+    let compiler = TestCompiler::new("multiplication", expression);
+    compiler.run_and_check_exit_code(expected_result);
+}
+
+#[test]
+fn test_division() {
+    let expression = "20/4";
+    let expected_result = 5;
+
+    let compiler = TestCompiler::new("division", expression);
+    compiler.run_and_check_exit_code(expected_result);
+}
+
+#[test]
+fn test_mixed_operations() {
+    let expression = "2+10*3";
+    let expected_result = 32; // 2+(10*3) = 32 with proper operator precedence
+
+    let compiler = TestCompiler::new("mixed_operations", expression);
+    compiler.run_and_check_exit_code(expected_result);
+}
+
+#[test]
+fn test_complex_expression() {
+    let expression = "20/4*2+3";
+    let expected_result = 13; // (20/4)*2+3 = 5*2+3 = 10+3 = 13
+
+    let compiler = TestCompiler::new("complex_expression", expression);
+    compiler.run_and_check_exit_code(expected_result);
+}
