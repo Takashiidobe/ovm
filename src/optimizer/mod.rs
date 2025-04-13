@@ -26,6 +26,10 @@ pub enum Op {
     Lte,
     Gt,
     Gte,
+    BitAnd,
+    BitOr,
+    And,
+    Or,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -90,12 +94,32 @@ impl SSA {
                     TokenType::GreaterEqual => Op::Gte,
                     TokenType::Less => Op::Lt,
                     TokenType::Greater => Op::Gt,
-                    _ => todo!(),
+                    TokenType::BitAnd => Op::BitAnd,
+                    TokenType::BitOr => Op::BitOr,
+                    TokenType::And => Op::And,
+                    TokenType::Or => Op::Or,
+                    _ => unreachable!(),
                 };
                 instrs.push(Instr::BinOp(temp.clone(), l, op, r));
                 temp
             }
             Expr::Grouping { expr } => self.expr_to_ir(expr, instrs),
+            Expr::Logical {
+                left,
+                operator,
+                right,
+            } => {
+                let l = self.expr_to_ir(left, instrs);
+                let r = self.expr_to_ir(right, instrs);
+                let temp = self.new_temp();
+                let op = match operator.r#type {
+                    TokenType::And => Op::And,
+                    TokenType::Or => Op::Or,
+                    _ => unreachable!(),
+                };
+                instrs.push(Instr::BinOp(temp.clone(), l, op, r));
+                temp
+            }
             e => panic!("{e:?}"),
         }
     }
@@ -144,6 +168,11 @@ impl Optimizer {
                     let rval = constants.get(&right);
                     match (lval, rval) {
                         (Some(&lv), Some(&rv)) => {
+                            if op == Op::And || op == Op::Or {
+                                constants.remove(&dest); // might be overwritten
+                                new_instrs.push(Instr::BinOp(dest, left, op, right));
+                                continue;
+                            }
                             let result = match op {
                                 Op::Add => lv + rv,
                                 Op::Sub => lv - rv,
@@ -155,6 +184,9 @@ impl Optimizer {
                                 Op::Lte => (lv <= rv) as i64,
                                 Op::Gt => (lv > rv) as i64,
                                 Op::Gte => (lv >= rv) as i64,
+                                Op::BitAnd => lv & rv,
+                                Op::BitOr => lv | rv,
+                                _ => unreachable!(),
                             };
                             constants.insert(dest.clone(), result);
                             new_instrs.push(Instr::Const(dest, result));

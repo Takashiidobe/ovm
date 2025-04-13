@@ -318,7 +318,7 @@ impl Parser {
     fn and(&mut self) -> Result<Expr, Error> {
         let mut expr = self.equality()?;
 
-        while self.r#match(&[TokenType::Or]) {
+        while self.r#match(&[TokenType::And]) {
             let operator = self.previous();
             let right = Box::new(self.equality()?);
             expr = Expr::Logical {

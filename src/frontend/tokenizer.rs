@@ -69,6 +69,8 @@ impl Tokenizer {
             '=' => self.add_relational_token(TokenType::Equal, TokenType::EqualEqual),
             '<' => self.add_relational_token(TokenType::Less, TokenType::LessEqual),
             '>' => self.add_relational_token(TokenType::Greater, TokenType::GreaterEqual),
+            '&' => self.add_token(TokenType::BitAnd, None),
+            '|' => self.add_token(TokenType::BitOr, None),
             '/' => {
                 if self.r#match('/') {
                     while self.peek() != '\n' && !self.is_at_end() {

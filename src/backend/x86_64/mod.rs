@@ -62,6 +62,8 @@ impl Backend for Codegen {
                                 Op::Add => "addq",
                                 Op::Sub => "subq",
                                 Op::Mul => "imulq",
+                                Op::BitOr | Op::Or => "orq",
+                                Op::BitAnd | Op::And => "andq",
                                 _ => unreachable!(),
                             };
                             asm.push(format!("{} {}, %rax", op_instr, r));

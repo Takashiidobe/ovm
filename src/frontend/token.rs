@@ -18,6 +18,8 @@ pub enum TokenType {
     Slash,
     Star,
     // One or two character tokens
+    BitOr,
+    BitAnd,
     Bang,
     BangEqual,
     Equal,
@@ -114,6 +116,8 @@ impl fmt::Display for Token {
             | (TokenType::String, None)
             | (TokenType::Integer, None)
             | (TokenType::Float, None) => panic!("Invalid token"),
+            (TokenType::BitOr, _) => "|".to_string(),
+            (TokenType::BitAnd, _) => "&".to_string(),
         };
 
         f.write_str(&val)
