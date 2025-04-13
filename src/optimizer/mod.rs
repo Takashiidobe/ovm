@@ -1,3 +1,5 @@
+pub mod registers;
+
 use crate::frontend::parser::Expr;
 
 #[derive(Debug, PartialEq, Clone)]

@@ -1,69 +1,84 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
-use crate::optimizer::{Instr, Op};
+use crate::optimizer::{Instr, Op, registers::Location};
 
 use super::Backend;
 
 pub struct Codegen;
 
 impl Backend for Codegen {
-    fn generate_assembly(&self, instrs: &[Instr]) -> String {
+    fn generate_assembly(&self, instrs: &[Instr], locations: &HashMap<String, Location>) -> String {
         let mut asm = Vec::new();
 
-        // Section .data with format string
+        // .data
         asm.push(".section .data".to_string());
         asm.push("fmt: .string \"%ld\\n\"".to_string());
 
-        // Section .bss with temp definitions
+        // .bss for spilled temps
         asm.push(".section .bss".to_string());
-        for temp in self.collect_temps(instrs) {
-            asm.push(format!("{}: .quad 0", temp));
+        for (temp, loc) in locations {
+            if let Location::Spill = loc {
+                asm.push(format!("{}: .quad 0", temp));
+            }
         }
 
-        // Section .text
+        // .text
         asm.push(".section .text".to_string());
         asm.push(".globl main".to_string());
         asm.push("main:".to_string());
 
         // Emit code
+        let resolve = |t: &String| -> String {
+            match locations.get(t).unwrap_or_else(|| {
+                dbg!(&locations);
+                panic!("Could not find temporary variable {t}")
+            }) {
+                Location::Register(reg) => reg.clone(),
+                Location::Spill => format!("{}(%rip)", t),
+            }
+        };
+
         for instr in instrs {
             match instr {
                 Instr::Const(name, val) => {
-                    asm.push(format!("movq ${}, {}(%rip)", val, name));
+                    let dst = resolve(name);
+                    asm.push(format!("movq ${}, {}", val, dst));
                 }
                 Instr::BinOp(dest, left, op, right) => {
-                    let op_instr = match op {
-                        Op::Add => "addq",
-                        Op::Sub => "subq",
-                        Op::Mul => "imulq",
-                        Op::Div => "idivq",
-                    };
+                    let l = resolve(left);
+                    let r = resolve(right);
+                    let d = resolve(dest);
 
                     match op {
                         Op::Div => {
-                            // idivq needs dividend in RAX and sign-ext in RDX
-                            asm.push(format!("movq {}(%rip), %rax", left));
-                            asm.push("cqto".to_string()); // sign-extend RAX into RDX:RAX
-                            asm.push(format!("idivq {}(%rip)", right));
-                            asm.push(format!("movq %rax, {}(%rip)", dest));
+                            asm.push(format!("movq {}, %rax", l));
+                            asm.push("cqto".to_string());
+                            asm.push(format!("idivq {}", r));
+                            asm.push(format!("movq %rax, {}", d));
                         }
                         _ => {
-                            asm.push(format!("movq {left}(%rip), %rax"));
-                            asm.push(format!("{} {}(%rip), %rax", op_instr, right));
-                            asm.push(format!("movq %rax, {}(%rip)", dest));
+                            asm.push(format!("movq {}, %rax", l));
+                            let op_instr = match op {
+                                Op::Add => "addq",
+                                Op::Sub => "subq",
+                                Op::Mul => "imulq",
+                                _ => unreachable!(),
+                            };
+                            asm.push(format!("{} {}, %rax", op_instr, r));
+                            asm.push(format!("movq %rax, {}", d));
                         }
                     }
                 }
                 Instr::Print(name) => {
-                    asm.push(format!("movq {}(%rip), %rsi", name)); // arg 2
-                    asm.push("leaq fmt(%rip), %rdi".to_string()); // arg 1
-                    asm.push("xor %rax, %rax".to_string()); // clear RAX for varargs
+                    let src = resolve(name);
+                    asm.push(format!("movq {}, %rsi", src));
+                    asm.push("leaq fmt(%rip), %rdi".to_string());
+                    asm.push("xor %rax, %rax".to_string());
                     asm.push("call printf".to_string());
                 }
             }
         }
 
-        // Return 0
         asm.push("movl $0, %eax".to_string());
         asm.push("ret".to_string());
 
@@ -87,25 +102,5 @@ impl Codegen {
             })
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    fn collect_temps(&self, instrs: &[Instr]) -> HashSet<String> {
-        let mut temps = HashSet::new();
-        for instr in instrs {
-            match instr {
-                Instr::Const(t, _) => {
-                    temps.insert(t.clone());
-                }
-                Instr::BinOp(t, l, _, r) => {
-                    temps.insert(t.clone());
-                    temps.insert(l.clone());
-                    temps.insert(r.clone());
-                }
-                Instr::Print(t) => {
-                    temps.insert(t.clone());
-                }
-            }
-        }
-        temps
     }
 }

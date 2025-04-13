@@ -21,16 +21,16 @@ cargo build --release
 
 ### Usage
 
-The CLI currently accepts an integer argument and generates x86_64 assembly that returns with that number.
+The CLI currently accepts a program of statements and generates x86_64 assembly that returns with that number.
 
 Basic usage:
 
 ```bash
-cargo run -- 42
+cargo run -- 'print(1+2);' > main.S
 ```
 
 ## Project Structure
 
-- `src/frontend/`: Language parser and IR generator
-- `src/optimizer/`: SSA optimizer components
+- `src/frontend/`: Tokenizer and parser
+- `src/optimizer/`: SSA optimizer and register allocation
 - `src/backend/`: Code generation for x86_64

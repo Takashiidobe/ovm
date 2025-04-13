@@ -3,6 +3,8 @@ use ovm::backend::x86_64::Codegen;
 use ovm::cli::Cli;
 use ovm::frontend::parser::Parser;
 use ovm::frontend::tokenizer::{Token, Tokenizer};
+use ovm::optimizer::registers::RegisterAllocator as _;
+use ovm::optimizer::registers::linear_scan::LinearScan;
 use ovm::optimizer::{Optimizer, SSA};
 
 fn main() {
@@ -30,8 +32,11 @@ fn main() {
     let optimizer = Optimizer;
     let instrs = optimizer.run_all(ssa_instrs);
 
+    let promoter = LinearScan;
+    let (promoted_instrs, reg_map) = promoter.allocate(&instrs);
+
     // Generate assembly
-    let asm = backend.generate_assembly(&instrs);
+    let asm = backend.generate_assembly(&promoted_instrs, &reg_map);
 
     // Print assembly
     println!("{}", asm);
