@@ -2,11 +2,11 @@ use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "ovm")]
-#[command(about = "A simple compiler that generates assembly for the specified integer value")]
+#[command(about = "A simple compiler that generates assembly from arithmetic expressions")]
 pub struct Cli {
-    /// The integer value to return
-    #[arg(default_value_t = 0)]
-    pub value: i64,
+    /// The expression to compile (e.g., "5+20-4")
+    #[arg(default_value = "0")]
+    pub expression: String,
 
     #[clap(short, long, default_value = "x86_64")]
     pub arch: String,
