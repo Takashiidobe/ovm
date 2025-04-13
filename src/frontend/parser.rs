@@ -29,12 +29,12 @@ impl Parser {
         while position < tokens.len() {
             let (expr, next_pos) = Self::parse_expr(tokens, position)?;
             statements.push(expr);
-            
+
             // If we reached the end of the tokens, we're done
             if next_pos >= tokens.len() {
                 break;
             }
-            
+
             // Otherwise, we should have a semicolon
             match tokens[next_pos] {
                 Token::Semicolon => {
@@ -46,11 +46,11 @@ impl Parser {
                 }
             }
         }
-        
+
         if statements.is_empty() {
             return Err("No valid statements found".to_string());
         }
-        
+
         Ok(Program { statements })
     }
 
@@ -116,17 +116,17 @@ impl Parser {
                 if pos + 1 >= tokens.len() {
                     return Err("Expected expression after 'print'".to_string());
                 }
-                
+
                 // Parse the expression inside print()
                 let (expr, next_pos) = Self::parse_expr(tokens, pos + 1)?;
-                
+
                 Ok((Expr::Print(Box::new(expr)), next_pos))
-            },
+            }
             Token::Number(n) => Ok((Expr::Num(*n), pos + 1)),
             Token::LeftParen => {
                 // Parse a parenthesized expression
                 let (expr, next_pos) = Self::parse_expr(tokens, pos + 1)?;
-                
+
                 // Ensure there's a matching right parenthesis
                 if next_pos >= tokens.len() {
                     return Err("Missing closing parenthesis".to_string());
@@ -135,8 +135,11 @@ impl Parser {
                     Token::RightParen => Ok((expr, next_pos + 1)),
                     _ => Err("Expected closing parenthesis".to_string()),
                 }
-            },
-            _ => Err(format!("Expected number or opening parenthesis at position {}", pos)),
+            }
+            _ => Err(format!(
+                "Expected number or opening parenthesis at position {}",
+                pos
+            )),
         }
     }
 }
@@ -316,13 +319,13 @@ mod tests {
             )
         );
     }
-    
+
     #[test]
     fn test_parse_parentheses() {
         let input = "(2 + 3) * 4";
         let tokens = Tokenizer::tokenize(input).unwrap();
         let program = Parser::parse(&tokens).unwrap();
-        
+
         assert_eq!(program.statements.len(), 1);
         assert_eq!(
             program.statements[0],
@@ -332,13 +335,13 @@ mod tests {
             )
         );
     }
-    
+
     #[test]
     fn test_parse_nested_parentheses() {
         let input = "2 * (3 + (4 - 1))";
         let tokens = Tokenizer::tokenize(input).unwrap();
         let program = Parser::parse(&tokens).unwrap();
-        
+
         assert_eq!(program.statements.len(), 1);
         assert_eq!(
             program.statements[0],
@@ -351,116 +354,103 @@ mod tests {
             )
         );
     }
-    
+
     #[test]
     fn test_multiple_statements() {
         let input = "1; 2; 3";
         let tokens = Tokenizer::tokenize(input).unwrap();
         let program = Parser::parse(&tokens).unwrap();
-        
+
         assert_eq!(program.statements.len(), 3);
         assert_eq!(program.statements[0], Expr::Num(1));
         assert_eq!(program.statements[1], Expr::Num(2));
         assert_eq!(program.statements[2], Expr::Num(3));
     }
-    
+
     #[test]
     fn test_complex_multiple_statements() {
         let input = "1 + 2; 3 * 4; 5 - 6";
         let tokens = Tokenizer::tokenize(input).unwrap();
         let program = Parser::parse(&tokens).unwrap();
-        
+
         assert_eq!(program.statements.len(), 3);
         assert_eq!(
-            program.statements[0], 
+            program.statements[0],
             Expr::Add(Box::new(Expr::Num(1)), Box::new(Expr::Num(2)))
         );
         assert_eq!(
-            program.statements[1], 
+            program.statements[1],
             Expr::Mul(Box::new(Expr::Num(3)), Box::new(Expr::Num(4)))
         );
         assert_eq!(
-            program.statements[2], 
+            program.statements[2],
             Expr::Sub(Box::new(Expr::Num(5)), Box::new(Expr::Num(6)))
         );
     }
-    
+
     #[test]
     fn test_statements_with_parentheses() {
         let input = "(1 + 2) * 3; 4 + (5 * 6)";
         let tokens = Tokenizer::tokenize(input).unwrap();
         let program = Parser::parse(&tokens).unwrap();
-        
+
         assert_eq!(program.statements.len(), 2);
         assert_eq!(
-            program.statements[0], 
+            program.statements[0],
             Expr::Mul(
                 Box::new(Expr::Add(Box::new(Expr::Num(1)), Box::new(Expr::Num(2)))),
                 Box::new(Expr::Num(3))
             )
         );
         assert_eq!(
-            program.statements[1], 
+            program.statements[1],
             Expr::Add(
                 Box::new(Expr::Num(4)),
                 Box::new(Expr::Mul(Box::new(Expr::Num(5)), Box::new(Expr::Num(6))))
             )
         );
     }
-    
+
     #[test]
     fn test_parse_print() {
         let input = "print(123)";
         let tokens = Tokenizer::tokenize(input).unwrap();
         let program = Parser::parse(&tokens).unwrap();
-        
+
         assert_eq!(program.statements.len(), 1);
-        assert_eq!(
-            program.statements[0],
-            Expr::Print(Box::new(Expr::Num(123)))
-        );
+        assert_eq!(program.statements[0], Expr::Print(Box::new(Expr::Num(123))));
     }
-    
+
     #[test]
     fn test_parse_complex_print() {
         let input = "print(10 + 20 * 30)";
         let tokens = Tokenizer::tokenize(input).unwrap();
         let program = Parser::parse(&tokens).unwrap();
-        
+
         assert_eq!(program.statements.len(), 1);
         assert_eq!(
             program.statements[0],
-            Expr::Print(
-                Box::new(Expr::Add(
-                    Box::new(Expr::Num(10)),
-                    Box::new(Expr::Mul(
-                        Box::new(Expr::Num(20)),
-                        Box::new(Expr::Num(30))
-                    ))
-                ))
-            )
+            Expr::Print(Box::new(Expr::Add(
+                Box::new(Expr::Num(10)),
+                Box::new(Expr::Mul(Box::new(Expr::Num(20)), Box::new(Expr::Num(30))))
+            )))
         );
     }
-    
+
     #[test]
     fn test_multiple_prints() {
         let input = "print(1); print(2 + 3)";
         let tokens = Tokenizer::tokenize(input).unwrap();
         let program = Parser::parse(&tokens).unwrap();
-        
+
         assert_eq!(program.statements.len(), 2);
-        assert_eq!(
-            program.statements[0],
-            Expr::Print(Box::new(Expr::Num(1)))
-        );
+        assert_eq!(program.statements[0], Expr::Print(Box::new(Expr::Num(1))));
         assert_eq!(
             program.statements[1],
-            Expr::Print(
-                Box::new(Expr::Add(
-                    Box::new(Expr::Num(2)),
-                    Box::new(Expr::Num(3))
-                ))
-            )
+            Expr::Print(Box::new(Expr::Add(
+                Box::new(Expr::Num(2)),
+                Box::new(Expr::Num(3))
+            )))
         );
     }
 }

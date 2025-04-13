@@ -1,8 +1,9 @@
 use ovm::backend::Backend;
-use ovm::backend::x86_64::X86_64;
+use ovm::backend::x86_64::Codegen;
 use ovm::cli::Cli;
 use ovm::frontend::parser::Parser;
 use ovm::frontend::tokenizer::{Token, Tokenizer};
+use ovm::optimizer::{Optimizer, SSA};
 
 fn main() {
     let cli = Cli::parse();
@@ -18,13 +19,19 @@ fn main() {
         }
     };
 
+    // select backend to use
     let backend: Box<dyn Backend> = match cli.arch.as_str() {
-        "x86_64" => Box::new(X86_64),
+        "x86_64" => Box::new(Codegen),
         _ => panic!("Invalid backend provided"),
     };
 
+    let mut ssa = SSA::default();
+    let ssa_instrs = ssa.program_to_ir(&program.statements);
+    let optimizer = Optimizer;
+    let instrs = optimizer.run_all(ssa_instrs);
+
     // Generate assembly
-    let asm = backend.generate_assembly(&program);
+    let asm = backend.generate_assembly(&instrs);
 
     // Print assembly
     println!("{}", asm);

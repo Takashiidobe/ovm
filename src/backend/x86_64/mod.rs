@@ -1,110 +1,111 @@
-use crate::backend::Backend;
-use crate::frontend::parser::{Expr, Program};
-use std::fmt::Write;
+use std::collections::HashSet;
 
-pub struct X86_64;
+use crate::optimizer::{Instr, Op};
 
-impl Backend for X86_64 {
-    fn generate_assembly(&self, program: &Program) -> String {
-        // Include external printf for print statements
-        let mut asm = String::from(
-            ".extern printf\n\n.section .rodata\n.print_fmt:\n    .string \"%ld\\n\"\n\n.text\n.globl main\nmain:\n    push %rbp                # Save base pointer\n    mov %rsp, %rbp          # Set up stack frame\n",
-        );
+use super::Backend;
 
-        // Generate code for each statement, but only the last statement's value is returned
-        for (i, expr) in program.statements.iter().enumerate() {
-            if i > 0 {
-                // Add a comment to indicate a new statement
-                asm.push_str("    # New statement\n");
-            }
+pub struct Codegen;
 
-            // Generate code for this expression
-            asm.push_str(&self.generate_expr_code(expr));
+impl Backend for Codegen {
+    fn generate_assembly(&self, instrs: &[Instr]) -> String {
+        let mut asm = Vec::new();
+
+        // Section .data with format string
+        asm.push(".section .data".to_string());
+        asm.push("fmt: .string \"%ld\\n\"".to_string());
+
+        // Section .bss with temp definitions
+        asm.push(".section .bss".to_string());
+        for temp in self.collect_temps(instrs) {
+            asm.push(format!("{}: .quad 0", temp));
         }
 
-        // Return the last expression's value as exit code
-        asm.push_str("    xor %rax, %rax          # xor rax before exiting\n");
-        asm.push_str("    mov %rbp, %rsp          # Restore stack pointer\n");
-        asm.push_str("    pop %rbp                # Restore base pointer\n");
-        asm.push_str("    ret\n");
-        asm
-    }
+        // Section .text
+        asm.push(".section .text".to_string());
+        asm.push(".globl main".to_string());
+        asm.push("main:".to_string());
 
-    fn generate_expr_code(&self, expr: &Expr) -> String {
-        let mut asm = String::new();
-        Self::generate_expr_code_internal(expr, &mut asm);
-        asm
+        // Emit code
+        for instr in instrs {
+            match instr {
+                Instr::Const(name, val) => {
+                    asm.push(format!("movq ${}, {}(%rip)", val, name));
+                }
+                Instr::BinOp(dest, left, op, right) => {
+                    let op_instr = match op {
+                        Op::Add => "addq",
+                        Op::Sub => "subq",
+                        Op::Mul => "imulq",
+                        Op::Div => "idivq",
+                    };
+
+                    match op {
+                        Op::Div => {
+                            // idivq needs dividend in RAX and sign-ext in RDX
+                            asm.push(format!("movq {}(%rip), %rax", left));
+                            asm.push("cqto".to_string()); // sign-extend RAX into RDX:RAX
+                            asm.push(format!("idivq {}(%rip)", right));
+                            asm.push(format!("movq %rax, {}(%rip)", dest));
+                        }
+                        _ => {
+                            asm.push(format!("movq {left}(%rip), %rax"));
+                            asm.push(format!("{} {}(%rip), %rax", op_instr, right));
+                            asm.push(format!("movq %rax, {}(%rip)", dest));
+                        }
+                    }
+                }
+                Instr::Print(name) => {
+                    asm.push(format!("movq {}(%rip), %rsi", name)); // arg 2
+                    asm.push("leaq fmt(%rip), %rdi".to_string()); // arg 1
+                    asm.push("xor %rax, %rax".to_string()); // clear RAX for varargs
+                    asm.push("call printf".to_string());
+                }
+            }
+        }
+
+        // Return 0
+        asm.push("movl $0, %eax".to_string());
+        asm.push("ret".to_string());
+
+        self.format_asm(&asm)
     }
 }
 
-impl X86_64 {
-    fn generate_expr_code_internal(expr: &Expr, asm: &mut String) {
-        match expr {
-            Expr::Print(inner_expr) => {
-                // First evaluate the expression inside print()
-                Self::generate_expr_code_internal(inner_expr, asm);
+impl Codegen {
+    fn format_asm(&self, lines: &[String]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                if line.trim_end().ends_with(':')
+                    || line.starts_with(".section")
+                    || line.starts_with(".globl")
+                {
+                    line.to_string()
+                } else {
+                    format!("  {}", line)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
-                // Call printf with the result in %rax
-                writeln!(
-                    asm,
-                    "    mov %rax, %rsi            # Move result to second argument"
-                )
-                .unwrap();
-                writeln!(
-                    asm,
-                    "    lea .print_fmt(%rip), %rdi  # First argument: format string"
-                )
-                .unwrap();
-                writeln!(
-                    asm,
-                    "    xor %rax, %rax            # No vector registers used"
-                )
-                .unwrap();
-                writeln!(asm, "    call printf               # Call printf").unwrap();
-            }
-            Expr::Num(n) => {
-                asm.push_str(&format!(
-                    "    mov ${}, %rax        # Load value into rax\n",
-                    n
-                ));
-            }
-            Expr::Add(left, right) => {
-                Self::generate_expr_code_internal(left, asm);
-                asm.push_str("    push %rax                # Save left operand\n");
-                Self::generate_expr_code_internal(right, asm);
-                asm.push_str("    pop %rcx                 # Restore left operand into rcx\n");
-                asm.push_str("    add %rcx, %rax           # rax = rcx + rax\n");
-            }
-            Expr::Sub(left, right) => {
-                Self::generate_expr_code_internal(left, asm);
-                asm.push_str("    push %rax                # Save left operand\n");
-                Self::generate_expr_code_internal(right, asm);
-                asm.push_str("    mov %rax, %rcx           # Move right operand to rcx\n");
-                asm.push_str("    pop %rax                 # Restore left operand\n");
-                asm.push_str("    sub %rcx, %rax           # rax = rax - rcx\n");
-            }
-            Expr::Mul(left, right) => {
-                Self::generate_expr_code_internal(left, asm);
-                asm.push_str("    push %rax                # Save left operand\n");
-                Self::generate_expr_code_internal(right, asm);
-                asm.push_str("    pop %rcx                 # Restore left operand into rcx\n");
-                asm.push_str("    imul %rcx, %rax          # rax = rcx * rax\n");
-            }
-            Expr::Div(left, right) => {
-                Self::generate_expr_code_internal(left, asm);
-                asm.push_str("    push %rax                # Save left operand (dividend)\n");
-                Self::generate_expr_code_internal(right, asm);
-                asm.push_str(
-                    "    mov %rax, %rcx           # Move right operand (divisor) to rcx\n",
-                );
-                asm.push_str(
-                    "    pop %rax                 # Restore left operand (dividend) to rax\n",
-                );
-                asm.push_str("    cqo                      # Sign-extend RAX into RDX:RAX\n");
-                asm.push_str(
-                    "    idiv %rcx                # Divide RDX:RAX by RCX, result in RAX\n",
-                );
+    fn collect_temps(&self, instrs: &[Instr]) -> HashSet<String> {
+        let mut temps = HashSet::new();
+        for instr in instrs {
+            match instr {
+                Instr::Const(t, _) => {
+                    temps.insert(t.clone());
+                }
+                Instr::BinOp(t, l, _, r) => {
+                    temps.insert(t.clone());
+                    temps.insert(l.clone());
+                    temps.insert(r.clone());
+                }
+                Instr::Print(t) => {
+                    temps.insert(t.clone());
+                }
             }
         }
+        temps
     }
 }
