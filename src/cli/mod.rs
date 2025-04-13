@@ -7,6 +7,9 @@ pub struct Cli {
     /// The integer value to return
     #[arg(default_value_t = 0)]
     pub value: i64,
+
+    #[clap(short, long, default_value = "x86_64")]
+    pub arch: String,
 }
 
 impl Cli {

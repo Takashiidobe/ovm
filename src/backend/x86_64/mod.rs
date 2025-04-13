@@ -1,7 +1,9 @@
-pub struct X86_64Backend;
+use crate::backend::Backend;
 
-impl X86_64Backend {
-    pub fn generate_assembly(&self, value: i64) -> String {
+pub struct X86_64;
+
+impl Backend for X86_64 {
+    fn generate_assembly(&self, value: i64) -> String {
         format!(
             ".globl main
 main:
