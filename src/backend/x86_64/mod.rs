@@ -139,6 +139,12 @@ impl Backend for Codegen {
                         .or_default()
                         .push((from_else.clone(), dest.clone()));
                 }
+                Instr::Assign(dest, src) => {
+                    let dest = resolve(dest);
+                    let src = resolve(src);
+
+                    asm.push(format!("mov {dest}, {src}"));
+                }
             }
         }
 

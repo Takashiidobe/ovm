@@ -39,6 +39,10 @@ pub fn liveness(instrs: &[Instr]) -> Vec<HashSet<String>> {
             Instr::Jump(_) | Instr::Label(_) => {
                 // control flow only — nothing live changes directly
             }
+            Instr::Assign(dest, src) => {
+                live.remove(dest);
+                live.insert(src.clone());
+            }
         }
 
         live_sets[i] = live;
@@ -52,7 +56,7 @@ pub struct LinearScan;
 
 impl RegisterAllocator for LinearScan {
     fn allocate(&self, instrs: &[Instr]) -> (Vec<Instr>, HashMap<String, Location>) {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::HashMap;
 
         let liveness_sets = liveness(instrs);
 
@@ -148,7 +152,7 @@ fn test_register_allocation_with_liveness() {
     assert_eq!(
         asm,
         String::from(
-            ".section .data\n  fmt: .string \"%ld\\n\"\n.section .bss\n.section .text\n.globl main\nmain:\n  movq $1, %r15\n  movq $2, %r15\n  movq %r15, %rax\n  addq %r15, %rax\n  movq %rax, %r15\n  movq $3, %r15\n  movq %r15, %rax\n  imulq %r15, %rax\n  movq %rax, %r15\n  movq %r15, %rsi\n  leaq fmt(%rip), %rdi\n  xor %rax, %rax\n  call printf\n  movl $0, %eax\n  ret"
+            ".section .data\n  fmt: .string \"%ld\\n\"\n.section .bss\n.section .text\n.globl main\nmain:\n  movq $1, %r15\n  movq $2, %r14\n  movq %r15, %rax\n  addq %r14, %rax\n  movq %rax, %r13\n  movq $3, %r14\n  movq %r13, %rax\n  imulq %r14, %rax\n  movq %rax, %r15\n  movq %r15, %rsi\n  leaq fmt(%rip), %rdi\n  xor %rax, %rax\n  call printf\n  movl $0, %eax\n  ret"
         )
     );
 }

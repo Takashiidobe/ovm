@@ -1,5 +1,7 @@
 pub mod registers;
 
+use std::collections::HashMap;
+
 use crate::frontend::{
     expr::Expr,
     stmt::Stmt,
@@ -16,6 +18,7 @@ pub enum Instr {
     Jump(String),
     Label(String),
     Phi(String, String, String),
+    Assign(String, String),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -44,6 +47,7 @@ pub enum Op {
 #[derive(Default, Debug, PartialEq)]
 pub struct SSA {
     temp_counter: usize,
+    variable_versions: HashMap<String, usize>,
 }
 
 impl SSA {
@@ -57,6 +61,12 @@ impl SSA {
         let name = format!("{}_{}", base, self.temp_counter);
         self.temp_counter += 1;
         name
+    }
+
+    fn next_versioned_name(&mut self, var: &str) -> String {
+        let version = self.variable_versions.entry(var.to_string()).or_insert(0);
+        *version += 1;
+        format!("{}_{}", var, *version)
     }
 
     pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
@@ -129,6 +139,15 @@ impl SSA {
                 }
                 ret
             }
+            Stmt::Var { name, initializer } => {
+                let expr = initializer
+                    .clone()
+                    .unwrap_or(Expr::Literal { value: Object::Nil });
+                let rhs_temp = self.expr_to_ir(&expr, instrs);
+                let ssa_name = self.next_versioned_name(&name.lexeme);
+                instrs.push(Instr::Assign(ssa_name.clone(), rhs_temp));
+                ssa_name
+            }
             stmt => panic!("{stmt:?}"),
         }
     }
@@ -191,6 +210,13 @@ impl SSA {
                     _ => unreachable!(),
                 };
                 temp
+            }
+            Expr::Assign { name, value } => {
+                let rhs_temp = self.expr_to_ir(value, instrs);
+                let ssa_name = self.next_versioned_name(&name.lexeme);
+                instrs.push(Instr::Assign(ssa_name.clone(), rhs_temp));
+
+                ssa_name
             }
             e => panic!("{e:?}"),
         }
@@ -315,7 +341,7 @@ impl Optimizer {
         let mut optimized = Vec::new();
 
         // Pre-pass to record labels that can't be deleted (otherwise code will try to jump to a
-        // target that doesn't exist.
+        // target that doesn't exist).
         for instr in &instrs {
             match instr {
                 Instr::BranchIf(_, then_lbl, else_lbl) => {
@@ -335,7 +361,6 @@ impl Optimizer {
                     used.insert(var.clone());
                     optimized.push(instr.clone());
                 }
-
                 Instr::BinOp(dest, left, _, right) => {
                     if used.contains(dest) {
                         used.insert(left.clone());
@@ -343,7 +368,6 @@ impl Optimizer {
                         optimized.push(instr.clone());
                     }
                 }
-
                 Instr::Cmp(dest, left, _, right) => {
                     if used.contains(dest) {
                         used.insert(left.clone());
@@ -351,25 +375,21 @@ impl Optimizer {
                         optimized.push(instr.clone());
                     }
                 }
-
                 Instr::BranchIf(cond, then_label, else_label) => {
                     used.insert(cond.clone());
                     required_labels.insert(then_label.clone());
                     required_labels.insert(else_label.clone());
                     optimized.push(instr.clone());
                 }
-
                 Instr::Jump(label) => {
                     required_labels.insert(label.clone());
                     optimized.push(instr.clone());
                 }
-
                 Instr::Label(label) => {
                     if required_labels.contains(label) {
                         optimized.push(instr.clone());
                     }
                 }
-
                 Instr::Phi(dest, left, right) => {
                     if used.contains(dest) {
                         used.insert(left.clone());
@@ -377,8 +397,7 @@ impl Optimizer {
                         optimized.push(instr.clone());
                     }
                 }
-
-                Instr::Const(dest, _) => {
+                Instr::Const(dest, _) | Instr::Assign(dest, _) => {
                     if used.contains(dest) {
                         optimized.push(instr.clone());
                     }
