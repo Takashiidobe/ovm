@@ -26,8 +26,8 @@ fn main() {
     };
 
     // select backend to use
-    let backend: Box<dyn Backend> = match cli.arch.as_str() {
-        "x86_64" => Box::new(Codegen),
+    let mut backend: Box<dyn Backend> = match cli.arch.as_str() {
+        "x86_64" => Box::new(Codegen::default()),
         _ => panic!("Invalid backend provided"),
     };
 

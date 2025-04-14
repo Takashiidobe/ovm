@@ -19,8 +19,25 @@ pub fn liveness(instrs: &[Instr]) -> Vec<HashSet<String>> {
                 live.insert(left.clone());
                 live.insert(right.clone());
             }
+            Instr::Cmp(_, left, _, right) => {
+                // Comparison only uses operands, no defined result
+                live.insert(left.clone());
+                live.insert(right.clone());
+            }
+            Instr::BranchIf(cond, _, _) => {
+                live.insert(cond.clone());
+            }
             Instr::Print(name) => {
                 live.insert(name.clone());
+            }
+            Instr::Phi(dest, left, right) => {
+                // NOTE: This is tricky — discussed below
+                live.remove(dest);
+                live.insert(left.clone());
+                live.insert(right.clone());
+            }
+            Instr::Jump(_) | Instr::Label(_) => {
+                // control flow only — nothing live changes directly
             }
         }
 
@@ -35,53 +52,62 @@ pub struct LinearScan;
 
 impl RegisterAllocator for LinearScan {
     fn allocate(&self, instrs: &[Instr]) -> (Vec<Instr>, HashMap<String, Location>) {
+        use std::collections::{HashMap, HashSet};
+
         let liveness_sets = liveness(instrs);
-        let mut loc_map: HashMap<String, Location> = HashMap::new();
+
+        // 1. Build live intervals: Map<String, (start, end)>
+        let mut intervals: HashMap<String, (usize, usize)> = HashMap::new();
+
+        for (i, live) in liveness_sets.iter().enumerate() {
+            for var in live {
+                let entry = intervals.entry(var.clone()).or_insert((i, i));
+                entry.1 = i; // update end
+            }
+
+            // Also update starts for defs
+            match &instrs[i] {
+                Instr::Const(name, _) | Instr::BinOp(name, _, _, _) | Instr::Phi(name, _, _) => {
+                    let entry = intervals.entry(name.clone()).or_insert((i, i));
+                    entry.0 = i; // ensure earliest def
+                }
+                _ => {}
+            }
+        }
+
+        // 2. Convert to list and sort by start
+        let mut sorted_intervals: Vec<(String, usize, usize)> = intervals
+            .into_iter()
+            .map(|(var, (start, end))| (var, start, end))
+            .collect();
+
+        sorted_intervals.sort_by_key(|(_, start, _)| *start);
+
+        // 3. Perform linear scan
+        let mut active: Vec<(String, usize)> = vec![]; // (var, end)
         let mut reg_pool: Vec<String> = AVAILABLE_REGS.iter().map(|r| r.to_string()).collect();
-        let mut active: HashMap<String, String> = HashMap::new(); // temp -> reg
+        let mut loc_map: HashMap<String, Location> = HashMap::new();
 
-        for (i, instr) in instrs.iter().enumerate() {
-            // Allocate for new definitions
-            let defined = match instr {
-                Instr::Const(name, _) => Some(name),
-                Instr::BinOp(dest, _, _, _) => Some(dest),
-                Instr::Print(_) => None,
-            };
-
-            if let Some(var) = defined {
-                if let Some(reg) = reg_pool.pop() {
-                    loc_map.insert(var.clone(), Location::Register(reg.clone()));
-                    active.insert(var.clone(), reg);
+        for (var, start, end) in sorted_intervals {
+            // Expire old variables
+            active.retain(|(v, v_end)| {
+                if *v_end >= start {
+                    true
                 } else {
-                    loc_map.insert(var.clone(), Location::Spill);
-                }
-            }
-
-            // Free registers of variables no longer live
-            let live = &liveness_sets[i];
-            let no_longer_live: Vec<_> = active
-                .keys()
-                .filter(|v| !live.contains(*v))
-                .cloned()
-                .collect();
-
-            for var in no_longer_live {
-                if let Some(reg) = active.remove(&var) {
-                    reg_pool.push(reg);
-                }
-            }
-
-            // Ensure operands are recorded
-            match instr {
-                Instr::BinOp(_, l, _, r) => {
-                    for op in [l, r] {
-                        loc_map.entry(op.clone()).or_insert(Location::Spill);
+                    // free their register
+                    if let Some(Location::Register(reg)) = loc_map.get(v) {
+                        reg_pool.push(reg.clone());
                     }
+                    false
                 }
-                Instr::Print(v) => {
-                    loc_map.entry(v.clone()).or_insert(Location::Spill);
-                }
-                Instr::Const(_, _) => {}
+            });
+
+            // Allocate register or spill
+            if let Some(reg) = reg_pool.pop() {
+                loc_map.insert(var.clone(), Location::Register(reg.clone()));
+                active.push((var, end));
+            } else {
+                loc_map.insert(var.clone(), Location::Spill);
             }
         }
 
@@ -116,7 +142,7 @@ fn test_register_allocation_with_liveness() {
     let reg_promoter = LinearScan;
     let (instrs, locs) = reg_promoter.allocate(&instrs);
 
-    let codegen = Codegen;
+    let mut codegen = Codegen::default();
     let asm = codegen.generate_assembly(&instrs, &locs);
 
     assert_eq!(

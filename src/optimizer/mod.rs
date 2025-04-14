@@ -11,6 +11,21 @@ pub enum Instr {
     Const(String, i64),
     BinOp(String, String, Op, String),
     Print(String),
+    Cmp(String, String, CmpOp, String),
+    BranchIf(String, String, String),
+    Jump(String),
+    Label(String),
+    Phi(String, String, String),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum CmpOp {
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
 }
 
 #[non_exhaustive]
@@ -20,12 +35,6 @@ pub enum Op {
     Sub,
     Mul,
     Div,
-    Eq,
-    Neq,
-    Lt,
-    Lte,
-    Gt,
-    Gte,
     BitAnd,
     BitOr,
     And,
@@ -40,6 +49,12 @@ pub struct SSA {
 impl SSA {
     pub fn new_temp(&mut self) -> String {
         let name = format!("t{}", self.temp_counter);
+        self.temp_counter += 1;
+        name
+    }
+
+    pub fn new_label(&mut self, base: &str) -> String {
+        let name = format!("{}_{}", base, self.temp_counter);
         self.temp_counter += 1;
         name
     }
@@ -60,7 +75,61 @@ impl SSA {
                 instrs.push(Instr::Print(to_print.clone()));
                 to_print
             }
-            _ => todo!(),
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let cond_t = self.expr_to_ir(condition, instrs);
+                let then_label = self.new_label("then");
+                let else_label = self.new_label("else");
+                let merge_label = self.new_label("merge");
+
+                instrs.push(Instr::BranchIf(
+                    cond_t.clone(),
+                    then_label.clone(),
+                    else_label.clone(),
+                ));
+
+                // condition
+                instrs.push(Instr::Label(then_label.clone()));
+                let then_result = self.stmt_to_ir(then_branch, instrs);
+                instrs.push(Instr::Jump(merge_label.clone()));
+
+                // else, if it exists
+                let else_result = if let Some(else_stmt) = *else_branch.clone() {
+                    instrs.push(Instr::Label(else_label.clone()));
+                    let res = self.stmt_to_ir(&else_stmt, instrs);
+                    instrs.push(Instr::Jump(merge_label.clone()));
+                    Some(res)
+                } else {
+                    // No else: skip to merge
+                    instrs.push(Instr::Label(else_label.clone()));
+                    instrs.push(Instr::Jump(merge_label.clone()));
+                    None
+                };
+
+                // merge label
+                instrs.push(Instr::Label(merge_label.clone()));
+
+                // If both branches yield a value, merge them with a phi
+                match else_result {
+                    Some(e) => {
+                        let t = self.new_temp();
+                        instrs.push(Instr::Phi(t.clone(), then_result, e));
+                        t
+                    }
+                    None => then_result, // Result is only from then-branch
+                }
+            }
+            Stmt::Block { statements } => {
+                let mut ret = String::default();
+                for stmt in statements {
+                    ret = self.stmt_to_ir(stmt, instrs)
+                }
+                ret
+            }
+            stmt => panic!("{stmt:?}"),
         }
     }
 
@@ -83,24 +152,22 @@ impl SSA {
                 let l = self.expr_to_ir(left, instrs);
                 let r = self.expr_to_ir(right, instrs);
                 let temp = self.new_temp();
-                let op = match operator.r#type {
-                    TokenType::Plus => Op::Add,
-                    TokenType::Minus => Op::Sub,
-                    TokenType::Star => Op::Mul,
-                    TokenType::Slash => Op::Div,
-                    TokenType::EqualEqual => Op::Eq,
-                    TokenType::BangEqual => Op::Neq,
-                    TokenType::LessEqual => Op::Lte,
-                    TokenType::GreaterEqual => Op::Gte,
-                    TokenType::Less => Op::Lt,
-                    TokenType::Greater => Op::Gt,
-                    TokenType::BitAnd => Op::BitAnd,
-                    TokenType::BitOr => Op::BitOr,
-                    TokenType::And => Op::And,
-                    TokenType::Or => Op::Or,
+                match operator.r#type {
+                    TokenType::Plus => instrs.push(Instr::BinOp(temp.clone(), l, Op::Add, r)),
+                    TokenType::Minus => instrs.push(Instr::BinOp(temp.clone(), l, Op::Sub, r)),
+                    TokenType::Star => instrs.push(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
+                    TokenType::Slash => instrs.push(Instr::BinOp(temp.clone(), l, Op::Div, r)),
+                    TokenType::EqualEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::BangEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::LessEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
+                    TokenType::GreaterEqual => {
+                        instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
+                    }
+                    TokenType::Less => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
+                    TokenType::Greater => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
                     _ => unreachable!(),
                 };
-                instrs.push(Instr::BinOp(temp.clone(), l, op, r));
+
                 temp
             }
             Expr::Grouping { expr } => self.expr_to_ir(expr, instrs),
@@ -112,12 +179,17 @@ impl SSA {
                 let l = self.expr_to_ir(left, instrs);
                 let r = self.expr_to_ir(right, instrs);
                 let temp = self.new_temp();
-                let op = match operator.r#type {
-                    TokenType::And => Op::And,
-                    TokenType::Or => Op::Or,
+                match operator.r#type {
+                    TokenType::EqualEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::BangEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::LessEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
+                    TokenType::GreaterEqual => {
+                        instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
+                    }
+                    TokenType::Less => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
+                    TokenType::Greater => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
                     _ => unreachable!(),
                 };
-                instrs.push(Instr::BinOp(temp.clone(), l, op, r));
                 temp
             }
             e => panic!("{e:?}"),
@@ -150,7 +222,6 @@ impl Optimizer {
 
         res
     }
-
     pub fn constant_folding(&self, instrs: Vec<Instr>) -> Vec<Instr> {
         use std::collections::HashMap;
 
@@ -168,38 +239,65 @@ impl Optimizer {
                     let rval = constants.get(&right);
                     match (lval, rval) {
                         (Some(&lv), Some(&rv)) => {
-                            if op == Op::And || op == Op::Or {
-                                constants.remove(&dest); // might be overwritten
-                                new_instrs.push(Instr::BinOp(dest, left, op, right));
-                                continue;
-                            }
                             let result = match op {
                                 Op::Add => lv + rv,
                                 Op::Sub => lv - rv,
                                 Op::Mul => lv * rv,
                                 Op::Div => lv / rv,
-                                Op::Eq => (lv == rv) as i64,
-                                Op::Neq => (lv != rv) as i64,
-                                Op::Lt => (lv < rv) as i64,
-                                Op::Lte => (lv <= rv) as i64,
-                                Op::Gt => (lv > rv) as i64,
-                                Op::Gte => (lv >= rv) as i64,
                                 Op::BitAnd => lv & rv,
                                 Op::BitOr => lv | rv,
-                                _ => unreachable!(),
+                                Op::And => (lv > 0 && rv > 0) as i64,
+                                Op::Or => (lv > 0 || rv > 0) as i64,
                             };
                             constants.insert(dest.clone(), result);
                             new_instrs.push(Instr::Const(dest, result));
                         }
                         _ => {
-                            constants.remove(&dest); // might be overwritten
+                            constants.remove(&dest);
                             new_instrs.push(Instr::BinOp(dest, left, op, right));
                         }
                     }
                 }
-                Instr::Print(var) => {
-                    new_instrs.push(Instr::Print(var));
+                Instr::Cmp(dest, left, cmp_op, right) => {
+                    let lval = constants.get(&left);
+                    let rval = constants.get(&right);
+                    match (lval, rval) {
+                        (Some(&lv), Some(&rv)) => {
+                            let result = match cmp_op {
+                                CmpOp::Eq => lv == rv,
+                                CmpOp::Neq => lv != rv,
+                                CmpOp::Lt => lv < rv,
+                                CmpOp::Lte => lv <= rv,
+                                CmpOp::Gt => lv > rv,
+                                CmpOp::Gte => lv >= rv,
+                            };
+                            constants.insert(dest.clone(), result as i64);
+                            new_instrs.push(Instr::Const(dest, result as i64));
+                        }
+                        _ => {
+                            constants.remove(&dest);
+                            new_instrs.push(Instr::Cmp(dest, left, cmp_op, right));
+                        }
+                    }
                 }
+                Instr::Phi(dest, left, right) => {
+                    let lval = constants.get(&left);
+                    let rval = constants.get(&right);
+                    match (lval, rval) {
+                        (Some(&lv), Some(&rv)) if lv == rv => {
+                            constants.insert(dest.clone(), lv);
+                            new_instrs.push(Instr::Const(dest, lv));
+                        }
+                        _ => {
+                            constants.remove(&dest);
+                            new_instrs.push(Instr::Phi(dest, left, right));
+                        }
+                    }
+                }
+                Instr::Print(name) => {
+                    new_instrs.push(Instr::Print(name));
+                }
+                other => new_instrs.push(other),
             }
         }
 
@@ -210,26 +308,79 @@ impl Optimizer {
         use std::collections::HashSet;
 
         let mut used: HashSet<String> = HashSet::new();
-        let mut reversed: Vec<Instr> = instrs.clone();
+        let mut required_labels: HashSet<String> = HashSet::new();
+        let mut reversed = instrs.clone();
         reversed.reverse();
+
         let mut optimized = Vec::new();
 
-        for instr in reversed {
-            match &instr {
+        // Pre-pass to record labels that can't be deleted (otherwise code will try to jump to a
+        // target that doesn't exist.
+        for instr in &instrs {
+            match instr {
+                Instr::BranchIf(_, then_lbl, else_lbl) => {
+                    required_labels.insert(then_lbl.clone());
+                    required_labels.insert(else_lbl.clone());
+                }
+                Instr::Jump(label) => {
+                    required_labels.insert(label.clone());
+                }
+                _ => {}
+            }
+        }
+
+        for instr in &reversed {
+            match instr {
                 Instr::Print(var) => {
                     used.insert(var.clone());
-                    optimized.push(instr);
+                    optimized.push(instr.clone());
                 }
+
                 Instr::BinOp(dest, left, _, right) => {
                     if used.contains(dest) {
                         used.insert(left.clone());
                         used.insert(right.clone());
-                        optimized.push(instr);
+                        optimized.push(instr.clone());
                     }
                 }
+
+                Instr::Cmp(dest, left, _, right) => {
+                    if used.contains(dest) {
+                        used.insert(left.clone());
+                        used.insert(right.clone());
+                        optimized.push(instr.clone());
+                    }
+                }
+
+                Instr::BranchIf(cond, then_label, else_label) => {
+                    used.insert(cond.clone());
+                    required_labels.insert(then_label.clone());
+                    required_labels.insert(else_label.clone());
+                    optimized.push(instr.clone());
+                }
+
+                Instr::Jump(label) => {
+                    required_labels.insert(label.clone());
+                    optimized.push(instr.clone());
+                }
+
+                Instr::Label(label) => {
+                    if required_labels.contains(label) {
+                        optimized.push(instr.clone());
+                    }
+                }
+
+                Instr::Phi(dest, left, right) => {
+                    if used.contains(dest) {
+                        used.insert(left.clone());
+                        used.insert(right.clone());
+                        optimized.push(instr.clone());
+                    }
+                }
+
                 Instr::Const(dest, _) => {
                     if used.contains(dest) {
-                        optimized.push(instr);
+                        optimized.push(instr.clone());
                     }
                 }
             }
@@ -304,7 +455,12 @@ mod tests {
         let instrs = vec![
             Instr::Const("t0".to_string(), 10),
             Instr::Const("t1".to_string(), 20),
-            Instr::BinOp("t2".to_string(), "t0".to_string(), Op::Lt, "t1".to_string()), // 10 < 20 => true (1)
+            Instr::Cmp(
+                "t2".to_string(),
+                "t0".to_string(),
+                CmpOp::Lt,
+                "t1".to_string(),
+            ), // 10 < 20 => true (1)
             Instr::Const("t_unused".to_string(), 999),
             Instr::Print("t2".to_string()),
         ];
@@ -344,7 +500,12 @@ mod tests {
             ),
             // 18 == 18 => true (1)
             Instr::Const("t5".to_string(), 18),
-            Instr::BinOp("t6".to_string(), "t4".to_string(), Op::Eq, "t5".to_string()),
+            Instr::Cmp(
+                "t6".to_string(),
+                "t4".to_string(),
+                CmpOp::Eq,
+                "t5".to_string(),
+            ),
             // Dead code
             Instr::Const("t_unused".to_string(), 999),
             // Final print

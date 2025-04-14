@@ -1,13 +1,22 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::optimizer::{Instr, Op, registers::Location};
+use crate::optimizer::{CmpOp, Instr, Op, registers::Location};
 
 use super::Backend;
 
-pub struct Codegen;
+#[derive(Default, Clone)]
+pub struct Codegen {
+    locations: HashMap<String, Location>,
+    last_cmp_op: Option<CmpOp>,
+    phi_moves: BTreeMap<String, Vec<(String, String)>>,
+}
 
 impl Backend for Codegen {
-    fn generate_assembly(&self, instrs: &[Instr], locations: &HashMap<String, Location>) -> String {
+    fn generate_assembly(
+        &mut self,
+        instrs: &[Instr],
+        locations: &HashMap<String, Location>,
+    ) -> String {
         let mut asm = Vec::new();
 
         // .data
@@ -37,6 +46,8 @@ impl Backend for Codegen {
                 Location::Spill => format!("{}(%rip)", t),
             }
         };
+
+        dbg!(&instrs);
 
         for instr in instrs {
             match instr {
@@ -77,6 +88,56 @@ impl Backend for Codegen {
                     asm.push("leaq fmt(%rip), %rdi".to_string());
                     asm.push("xor %rax, %rax".to_string());
                     asm.push("call printf".to_string());
+                }
+                Instr::Cmp(_, left, cmp_op, right) => {
+                    let l = resolve(left);
+                    let r = resolve(right);
+                    asm.push(format!("cmpq {}, {}", r, l));
+                    self.last_cmp_op = Some(cmp_op.clone());
+                }
+                Instr::BranchIf(cond, then_label, else_label) => {
+                    if let Some(cmp_op) = self.last_cmp_op.take() {
+                        // Emit jump based on condition flags set by Cmp
+                        let jmp = match cmp_op {
+                            CmpOp::Eq => "je",
+                            CmpOp::Neq => "jne",
+                            CmpOp::Lt => "jl",
+                            CmpOp::Lte => "jle",
+                            CmpOp::Gt => "jg",
+                            CmpOp::Gte => "jge",
+                        };
+                        asm.push(format!("{} {}", jmp, then_label));
+                        asm.push(format!("jmp {}", else_label));
+                    } else {
+                        // Use value of cond as a boolean (0 or nonzero)
+                        let reg = resolve(cond);
+                        asm.push(format!("movq {}, %rax", reg));
+                        asm.push("testq %rax, %rax".to_string());
+                        asm.push(format!("jne {}", then_label));
+                        asm.push(format!("jmp {}", else_label));
+                    }
+                }
+                Instr::Jump(label) => {
+                    if let Some(moves) = self.phi_moves.get(label) {
+                        for (src, dest) in moves {
+                            asm.push(format!("movq {}, {}", resolve(src), resolve(dest)));
+                        }
+                    }
+                    asm.push(format!("jmp {}", label));
+                }
+                Instr::Label(label) => {
+                    asm.push(format!("{}:", label));
+                }
+                Instr::Phi(dest, from_then, from_else) => {
+                    self.phi_moves
+                        .entry("then_0".to_string())
+                        .or_default()
+                        .push((from_then.clone(), dest.clone()));
+
+                    self.phi_moves
+                        .entry("else_1".to_string())
+                        .or_default()
+                        .push((from_else.clone(), dest.clone()));
                 }
             }
         }
