@@ -44,23 +44,11 @@ pub enum Op {
     Or,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Default, Debug, PartialEq)]
 pub struct SSA {
     temp_counter: usize,
     variable_versions: HashMap<String, usize>,
     scopes: Vec<HashMap<String, String>>,
-}
-
-impl Default for SSA {
-    fn default() -> Self {
-        let mut ssa = SSA {
-            temp_counter: 0,
-            variable_versions: HashMap::new(),
-            scopes: Vec::new(),
-        };
-        // ssa.enter_scope();
-        ssa
-    }
 }
 
 impl SSA {
@@ -370,10 +358,9 @@ pub enum Pass {
 
 impl Optimizer {
     pub fn run_all(&self, instrs: Vec<Instr>) -> Vec<Instr> {
-        // let folded = self.constant_folding(instrs);
+        let folded = self.constant_folding(instrs);
 
-        // self.dead_code_elimination(folded)
-        instrs
+        self.dead_code_elimination(folded)
     }
 
     pub fn run(&self, instrs: Vec<Instr>, passes: Vec<Pass>) -> Vec<Instr> {
@@ -449,10 +436,17 @@ impl Optimizer {
                     let lval = constants.get(&left);
                     let rval = constants.get(&right);
                     match (lval, rval) {
+                        // If both values are constant and identical, we can replace with a constant
                         (Some(&lv), Some(&rv)) if lv == rv => {
                             constants.insert(dest.clone(), lv);
                             new_instrs.push(Instr::Const(dest, lv));
                         }
+                        // If both are constants but different, we need to keep the phi since it depends on control flow
+                        (Some(_), Some(_)) => {
+                            constants.remove(&dest);
+                            new_instrs.push(Instr::Phi(dest, left, right));
+                        }
+                        // If either branch is not a constant, we can't fold
                         _ => {
                             constants.remove(&dest);
                             new_instrs.push(Instr::Phi(dest, left, right));
@@ -536,8 +530,14 @@ impl Optimizer {
                         optimized.push(instr.clone());
                     }
                 }
-                Instr::Const(dest, _) | Instr::Assign(dest, _) => {
+                Instr::Const(dest, _) => {
                     if used.contains(dest) {
+                        optimized.push(instr.clone());
+                    }
+                }
+                Instr::Assign(dest, src) => {
+                    if used.contains(dest) {
+                        used.insert(src.clone());
                         optimized.push(instr.clone());
                     }
                 }
