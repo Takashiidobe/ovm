@@ -6,7 +6,6 @@ use super::Backend;
 
 #[derive(Default, Clone)]
 pub struct Codegen {
-    locations: HashMap<String, Location>,
     last_cmp_op: Option<CmpOp>,
     phi_moves: BTreeMap<String, Vec<(String, String)>>,
 }
@@ -129,21 +128,48 @@ impl Backend for Codegen {
                     asm.push(format!("{}:", label));
                 }
                 Instr::Phi(dest, from_then, from_else) => {
-                    self.phi_moves
-                        .entry("then_0".to_string())
-                        .or_default()
-                        .push((from_then.clone(), dest.clone()));
+                    // Find corresponding branch labels by scanning previous instructions
+                    let mut then_label = String::new();
+                    let mut else_label = String::new();
 
-                    self.phi_moves
-                        .entry("else_1".to_string())
-                        .or_default()
-                        .push((from_else.clone(), dest.clone()));
+                    // Look for the most recent BranchIf to find labels
+                    for instr in instrs.iter().rev() {
+                        if let Instr::BranchIf(_, t_label, e_label) = instr {
+                            then_label = t_label.clone();
+                            else_label = e_label.clone();
+                            break;
+                        }
+                    }
+
+                    if !then_label.is_empty() && !else_label.is_empty() {
+                        self.phi_moves
+                            .entry(then_label)
+                            .or_default()
+                            .push((from_then.clone(), dest.clone()));
+
+                        self.phi_moves
+                            .entry(else_label)
+                            .or_default()
+                            .push((from_else.clone(), dest.clone()));
+                    } else {
+                        // Fallback to default behavior
+                        eprintln!("Warning: Could not find branch labels for phi node, using default.");
+                        self.phi_moves
+                            .entry("then_4".to_string())
+                            .or_default()
+                            .push((from_then.clone(), dest.clone()));
+
+                        self.phi_moves
+                            .entry("else_5".to_string())
+                            .or_default()
+                            .push((from_else.clone(), dest.clone()));
+                    }
                 }
                 Instr::Assign(dest, src) => {
                     let dest = resolve(dest);
                     let src = resolve(src);
 
-                    asm.push(format!("mov {dest}, {src}"));
+                    asm.push(format!("movq {}, {}", src, dest));
                 }
             }
         }

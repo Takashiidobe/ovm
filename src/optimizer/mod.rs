@@ -1,6 +1,6 @@
 pub mod registers;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::frontend::{
     expr::Expr,
@@ -44,20 +44,70 @@ pub enum Op {
     Or,
 }
 
-#[derive(Default, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct SSA {
     temp_counter: usize,
     variable_versions: HashMap<String, usize>,
+    scopes: Vec<HashMap<String, String>>,
+}
+
+impl Default for SSA {
+    fn default() -> Self {
+        let mut ssa = SSA {
+            temp_counter: 0,
+            variable_versions: HashMap::new(),
+            scopes: Vec::new(),
+        };
+        // ssa.enter_scope();
+        ssa
+    }
 }
 
 impl SSA {
-    pub fn new_temp(&mut self) -> String {
+    fn enter_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn exit_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn define_variable(&mut self, name: &str, ssa_name: String) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), ssa_name);
+        } else {
+            let mut scope = HashMap::new();
+            scope.insert(name.to_string(), ssa_name);
+            self.scopes.push(scope);
+        }
+    }
+
+    fn resolve_variable(&self, name: &str) -> Option<&String> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(ssa_name) = scope.get(name) {
+                return Some(ssa_name);
+            }
+        }
+        None
+    }
+
+    fn with_scope<F, R>(&mut self, mut f: F) -> R
+    where
+        F: FnMut(&mut Self) -> R,
+    {
+        self.enter_scope();
+        let result = f(self);
+        self.exit_scope();
+        result
+    }
+
+    fn new_temp(&mut self) -> String {
         let name = format!("t{}", self.temp_counter);
         self.temp_counter += 1;
         name
     }
 
-    pub fn new_label(&mut self, base: &str) -> String {
+    fn new_label(&mut self, base: &str) -> String {
         let name = format!("{}_{}", base, self.temp_counter);
         self.temp_counter += 1;
         name
@@ -101,36 +151,118 @@ impl SSA {
                     else_label.clone(),
                 ));
 
-                // condition
-                instrs.push(Instr::Label(then_label.clone()));
-                let then_result = self.stmt_to_ir(then_branch, instrs);
-                instrs.push(Instr::Jump(merge_label.clone()));
-
-                // else, if it exists
-                let else_result = if let Some(else_stmt) = *else_branch.clone() {
-                    instrs.push(Instr::Label(else_label.clone()));
-                    let res = self.stmt_to_ir(&else_stmt, instrs);
+                let (then_result, then_scope) = {
+                    instrs.push(Instr::Label(then_label.clone()));
+                    let mut result = String::new();
+                    let scope = self.with_scope(|ssa| {
+                        result = ssa.stmt_to_ir(then_branch, instrs);
+                        ssa.scopes.last().cloned().unwrap_or_default()
+                    });
                     instrs.push(Instr::Jump(merge_label.clone()));
-                    Some(res)
-                } else {
-                    // No else: skip to merge
-                    instrs.push(Instr::Label(else_label.clone()));
-                    instrs.push(Instr::Jump(merge_label.clone()));
-                    None
+                    (result, scope)
                 };
 
-                // merge label
-                instrs.push(Instr::Label(merge_label.clone()));
+                let (else_result, else_scope) = {
+                    instrs.push(Instr::Label(else_label.clone()));
+                    let mut result = String::new();
+                    let scope = self.with_scope(|ssa| {
+                        if let Some(else_stmt) = *else_branch.clone() {
+                            result = ssa.stmt_to_ir(&else_stmt, instrs);
+                        } else {
+                            result = ssa.new_temp();
+                            instrs.push(Instr::Const(result.clone(), 0));
+                        }
+                        ssa.scopes.last().cloned().unwrap_or_default()
+                    });
+                    instrs.push(Instr::Jump(merge_label.clone()));
+                    (result, scope)
+                };
 
-                // If both branches yield a value, merge them with a phi
-                match else_result {
-                    Some(e) => {
-                        let t = self.new_temp();
-                        instrs.push(Instr::Phi(t.clone(), then_result, e));
-                        t
+                instrs.push(Instr::Label(merge_label.clone()));
+                self.enter_scope(); // merge scope must be explicitly re-entered
+
+                // Value result of the whole if-expression
+                let if_result = self.new_temp();
+                instrs.push(Instr::Phi(
+                    if_result.clone(),
+                    then_result.clone(),
+                    else_result.clone(),
+                ));
+
+                let outer_scope = self
+                    .scopes
+                    .get(self.scopes.len().saturating_sub(2))
+                    .cloned()
+                    .unwrap_or_default();
+
+                let all_vars: HashSet<_> = then_scope
+                    .keys()
+                    .chain(else_scope.keys())
+                    .chain(outer_scope.keys())
+                    .collect();
+
+                let mut processed_vars = HashSet::new();
+
+                for var in all_vars {
+                    if processed_vars.contains(var) {
+                        continue;
                     }
-                    None => then_result, // Result is only from then-branch
+                    processed_vars.insert(var.clone());
+
+                    let then_val = then_scope.get(var);
+                    let else_val = else_scope.get(var);
+
+                    match (then_val, else_val) {
+                        // Case 1: Variable modified in both branches with different values
+                        (Some(t1), Some(t2)) if t1 != t2 => {
+                            let phi = self.new_temp();
+                            instrs.push(Instr::Phi(phi.clone(), t1.clone(), t2.clone()));
+                            self.define_variable(var, phi);
+                        }
+                        // Case 2: Variable modified in only one branch
+                        (Some(t), None) => {
+                            // We need a phi node that uses the outer scope value for the
+                            // branch where it wasn't modified
+                            let outer_val = outer_scope.get(var).cloned().unwrap_or_else(|| {
+                                // If not in outer scope, create a dummy value
+                                let dummy = self.new_temp();
+                                instrs.push(Instr::Const(dummy.clone(), 0));
+                                dummy
+                            });
+
+                            let phi = self.new_temp();
+                            instrs.push(Instr::Phi(phi.clone(), t.clone(), outer_val));
+                            self.define_variable(var, phi);
+                        }
+                        (None, Some(t)) => {
+                            // Similar to above but for else branch
+                            let outer_val = outer_scope.get(var).cloned().unwrap_or_else(|| {
+                                let dummy = self.new_temp();
+                                instrs.push(Instr::Const(dummy.clone(), 0));
+                                dummy
+                            });
+
+                            let phi = self.new_temp();
+                            instrs.push(Instr::Phi(phi.clone(), outer_val, t.clone()));
+                            self.define_variable(var, phi);
+                        }
+                        // Case 3: Variable not modified in either branch, use outer scope
+                        (None, None) => {
+                            if let Some(t) = outer_scope.get(var) {
+                                // Just bring the outer scope value into current scope
+                                self.define_variable(var, t.clone());
+                            }
+                            // Do nothing if not in any scope
+                        }
+                        // Case 4: Modified in both branches with same value
+                        (Some(t1), Some(t2)) if t1 == t2 => {
+                            // No phi needed, just use the same value
+                            self.define_variable(var, t1.clone());
+                        }
+                        _ => unreachable!(),
+                    }
                 }
+                if_result
             }
             Stmt::Block { statements } => {
                 let mut ret = String::default();
@@ -145,6 +277,7 @@ impl SSA {
                     .unwrap_or(Expr::Literal { value: Object::Nil });
                 let rhs_temp = self.expr_to_ir(&expr, instrs);
                 let ssa_name = self.next_versioned_name(&name.lexeme);
+                self.define_variable(&name.lexeme, ssa_name.clone());
                 instrs.push(Instr::Assign(ssa_name.clone(), rhs_temp));
                 ssa_name
             }
@@ -215,9 +348,14 @@ impl SSA {
                 let rhs_temp = self.expr_to_ir(value, instrs);
                 let ssa_name = self.next_versioned_name(&name.lexeme);
                 instrs.push(Instr::Assign(ssa_name.clone(), rhs_temp));
+                self.define_variable(&name.lexeme, ssa_name.clone());
 
                 ssa_name
             }
+            Expr::Variable { name } => match self.resolve_variable(&name.lexeme) {
+                Some(ssa_name) => ssa_name.clone(),
+                None => panic!("Unresolved variable {}", name.lexeme),
+            },
             e => panic!("{e:?}"),
         }
     }
@@ -232,9 +370,10 @@ pub enum Pass {
 
 impl Optimizer {
     pub fn run_all(&self, instrs: Vec<Instr>) -> Vec<Instr> {
-        let folded = self.constant_folding(instrs);
+        // let folded = self.constant_folding(instrs);
 
-        self.dead_code_elimination(folded)
+        // self.dead_code_elimination(folded)
+        instrs
     }
 
     pub fn run(&self, instrs: Vec<Instr>, passes: Vec<Pass>) -> Vec<Instr> {

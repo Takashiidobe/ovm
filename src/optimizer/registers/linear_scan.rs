@@ -63,6 +63,42 @@ impl RegisterAllocator for LinearScan {
         // 1. Build live intervals: Map<String, (start, end)>
         let mut intervals: HashMap<String, (usize, usize)> = HashMap::new();
 
+        // First pass: collect all variable definitions
+        for (i, instr) in instrs.iter().enumerate() {
+            match instr {
+                Instr::Const(name, _) => {
+                    intervals.entry(name.clone()).or_insert((i, i));
+                },
+                Instr::BinOp(name, left, _, right) => {
+                    intervals.entry(name.clone()).or_insert((i, i));
+                    intervals.entry(left.clone()).or_insert((i, i));
+                    intervals.entry(right.clone()).or_insert((i, i));
+                },
+                Instr::Cmp(name, left, _, right) => {
+                    intervals.entry(name.clone()).or_insert((i, i));
+                    intervals.entry(left.clone()).or_insert((i, i));
+                    intervals.entry(right.clone()).or_insert((i, i));
+                },
+                Instr::Phi(name, left, right) => {
+                    intervals.entry(name.clone()).or_insert((i, i));
+                    intervals.entry(left.clone()).or_insert((i, i));
+                    intervals.entry(right.clone()).or_insert((i, i));
+                },
+                Instr::Print(name) => {
+                    intervals.entry(name.clone()).or_insert((i, i));
+                },
+                Instr::BranchIf(cond, _, _) => {
+                    intervals.entry(cond.clone()).or_insert((i, i));
+                },
+                Instr::Assign(dest, src) => {
+                    intervals.entry(dest.clone()).or_insert((i, i));
+                    intervals.entry(src.clone()).or_insert((i, i));
+                },
+                _ => {}
+            }
+        }
+
+        // Second pass: update intervals based on liveness
         for (i, live) in liveness_sets.iter().enumerate() {
             for var in live {
                 let entry = intervals.entry(var.clone()).or_insert((i, i));
@@ -72,6 +108,10 @@ impl RegisterAllocator for LinearScan {
             // Also update starts for defs
             match &instrs[i] {
                 Instr::Const(name, _) | Instr::BinOp(name, _, _, _) | Instr::Phi(name, _, _) => {
+                    let entry = intervals.entry(name.clone()).or_insert((i, i));
+                    entry.0 = i; // ensure earliest def
+                }
+                Instr::Assign(name, _) => {
                     let entry = intervals.entry(name.clone()).or_insert((i, i));
                     entry.0 = i; // ensure earliest def
                 }
