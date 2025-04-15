@@ -123,6 +123,70 @@ impl SSA {
                 instrs.push(Instr::Print(to_print.clone()));
                 to_print
             }
+            Stmt::While { condition, body } => {
+                let loop_start = self.new_label("while_start");
+                let loop_body = self.new_label("while_body");
+                let loop_end = self.new_label("while_end");
+
+                // Step 1: Capture outer scope before loop
+                let outer_scope = self.scopes.last().cloned().unwrap_or_default();
+
+                // Step 2: Emit loop header
+                instrs.push(Instr::Label(loop_start.clone()));
+
+                // Step 3: Create Phi nodes for loop-carried variables
+                let mut phi_vars = HashMap::new(); // var_name → phi_name
+                for (var, outer_val) in &outer_scope {
+                    let phi_temp = self.new_temp();
+                    instrs.push(Instr::Phi(
+                        phi_temp.clone(),
+                        outer_val.clone(),
+                        outer_val.clone(),
+                    ));
+                    self.define_variable(var, phi_temp.clone());
+                    phi_vars.insert(var.clone(), phi_temp);
+                }
+
+                // Step 4: Emit condition check
+                let cond_temp = self.expr_to_ir(condition, instrs);
+                instrs.push(Instr::BranchIf(
+                    cond_temp.clone(),
+                    loop_body.clone(),
+                    loop_end.clone(),
+                ));
+
+                // Step 5: Loop body
+                instrs.push(Instr::Label(loop_body.clone()));
+
+                let updated_vars = self.with_scope(|ssa| {
+                    ssa.stmt_to_ir(body, instrs);
+                    ssa.scopes.last().cloned().unwrap_or_default()
+                });
+
+                // Step 6: Update Phi backedges (only if values changed)
+                for (var, phi_name) in &phi_vars {
+                    if let Some(updated_val) = updated_vars.get(var) {
+                        instrs.push(Instr::Phi(
+                            phi_name.clone(),
+                            outer_scope.get(var).unwrap().clone(),
+                            updated_val.clone(),
+                        ));
+                        self.define_variable(var, phi_name.clone()); // Rebind phi result for next iterations
+                    }
+                }
+
+                // Step 7: Loop back
+                instrs.push(Instr::Jump(loop_start.clone()));
+
+                // Step 8: Exit loop
+                instrs.push(Instr::Label(loop_end.clone()));
+
+                // Step 9: Dummy result (loops don't produce a meaningful value)
+                let result = self.new_temp();
+                instrs.push(Instr::Const(result.clone(), 0));
+
+                result
+            }
             Stmt::If {
                 condition,
                 then_branch,
