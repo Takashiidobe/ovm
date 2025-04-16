@@ -6,7 +6,8 @@ use ovm::frontend::token::Token;
 use ovm::frontend::tokenizer::Tokenizer;
 use ovm::optimizer::registers::RegisterAllocator as _;
 use ovm::optimizer::registers::linear_scan::LinearScan;
-use ovm::optimizer::{Optimizer, SSA};
+use ovm::optimizer::passes::Optimizer;
+use ovm::optimizer::{SSA};
 
 fn main() {
     let cli = Cli::parse();

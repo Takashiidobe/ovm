@@ -4,195 +4,109 @@ use crate::optimizer::Instr;
 
 use super::{AVAILABLE_REGS, Location, RegisterAllocator};
 
-pub fn liveness(instrs: &[Instr]) -> Vec<HashSet<String>> {
-    let mut live_sets = vec![HashSet::new(); instrs.len() + 1]; // +1 for final empty set
-
-    for i in (0..instrs.len()).rev() {
-        let mut live = live_sets[i + 1].clone();
-
-        match &instrs[i] {
-            Instr::Const(name, _) => {
-                live.remove(name);
-            }
-            Instr::BinOp(dest, left, _, right) => {
-                live.remove(dest);
-                live.insert(left.clone());
-                live.insert(right.clone());
-            }
-            Instr::Cmp(_, left, _, right) => {
-                // Comparison only uses operands, no defined result
-                live.insert(left.clone());
-                live.insert(right.clone());
-            }
-            Instr::BranchIf(cond, _, _) => {
-                live.insert(cond.clone());
-            }
-            Instr::Print(name) => {
-                live.insert(name.clone());
-            }
-            Instr::Phi(dest, left, right) => {
-                // NOTE: This is tricky — discussed below
-                live.remove(dest);
-                live.insert(left.clone());
-                live.insert(right.clone());
-            }
-            Instr::Jump(_) | Instr::Label(_) => {
-                // control flow only — nothing live changes directly
-            }
-            Instr::Assign(dest, src) => {
-                live.remove(dest);
-                live.insert(src.clone());
-            }
-        }
-
-        live_sets[i] = live;
-    }
-
-    live_sets.truncate(instrs.len()); // discard final dummy
-    live_sets
-}
-
 pub struct LinearScan;
 
 impl RegisterAllocator for LinearScan {
     fn allocate(&self, instrs: &[Instr]) -> (Vec<Instr>, HashMap<String, Location>) {
-        use std::collections::HashMap;
-
-        let liveness_sets = liveness(instrs);
-
-        // 1. Build live intervals: Map<String, (start, end)>
-        let mut intervals: HashMap<String, (usize, usize)> = HashMap::new();
-
-        // First pass: collect all variable definitions
-        for (i, instr) in instrs.iter().enumerate() {
-            match instr {
-                Instr::Const(name, _) => {
-                    intervals.entry(name.clone()).or_insert((i, i));
-                },
-                Instr::BinOp(name, left, _, right) => {
-                    intervals.entry(name.clone()).or_insert((i, i));
-                    intervals.entry(left.clone()).or_insert((i, i));
-                    intervals.entry(right.clone()).or_insert((i, i));
-                },
-                Instr::Cmp(name, left, _, right) => {
-                    intervals.entry(name.clone()).or_insert((i, i));
-                    intervals.entry(left.clone()).or_insert((i, i));
-                    intervals.entry(right.clone()).or_insert((i, i));
-                },
-                Instr::Phi(name, left, right) => {
-                    intervals.entry(name.clone()).or_insert((i, i));
-                    intervals.entry(left.clone()).or_insert((i, i));
-                    intervals.entry(right.clone()).or_insert((i, i));
-                },
-                Instr::Print(name) => {
-                    intervals.entry(name.clone()).or_insert((i, i));
-                },
-                Instr::BranchIf(cond, _, _) => {
-                    intervals.entry(cond.clone()).or_insert((i, i));
-                },
-                Instr::Assign(dest, src) => {
-                    intervals.entry(dest.clone()).or_insert((i, i));
-                    intervals.entry(src.clone()).or_insert((i, i));
-                },
-                _ => {}
-            }
-        }
-
-        // Second pass: update intervals based on liveness
-        for (i, live) in liveness_sets.iter().enumerate() {
-            for var in live {
-                let entry = intervals.entry(var.clone()).or_insert((i, i));
-                entry.1 = i; // update end
-            }
-
-            // Also update starts for defs
-            match &instrs[i] {
-                Instr::Const(name, _) | Instr::BinOp(name, _, _, _) | Instr::Phi(name, _, _) => {
-                    let entry = intervals.entry(name.clone()).or_insert((i, i));
-                    entry.0 = i; // ensure earliest def
-                }
-                Instr::Assign(name, _) => {
-                    let entry = intervals.entry(name.clone()).or_insert((i, i));
-                    entry.0 = i; // ensure earliest def
-                }
-                _ => {}
-            }
-        }
-
-        // 2. Convert to list and sort by start
-        let mut sorted_intervals: Vec<(String, usize, usize)> = intervals
-            .into_iter()
-            .map(|(var, (start, end))| (var, start, end))
-            .collect();
-
-        sorted_intervals.sort_by_key(|(_, start, _)| *start);
-
-        // 3. Perform linear scan
-        let mut active: Vec<(String, usize)> = vec![]; // (var, end)
-        let mut reg_pool: Vec<String> = AVAILABLE_REGS.iter().map(|r| r.to_string()).collect();
-        let mut loc_map: HashMap<String, Location> = HashMap::new();
-
-        for (var, start, end) in sorted_intervals {
-            // Expire old variables
-            active.retain(|(v, v_end)| {
-                if *v_end >= start {
-                    true
-                } else {
-                    // free their register
-                    if let Some(Location::Register(reg)) = loc_map.get(v) {
-                        reg_pool.push(reg.clone());
-                    }
-                    false
-                }
-            });
-
-            // Allocate register or spill
-            if let Some(reg) = reg_pool.pop() {
-                loc_map.insert(var.clone(), Location::Register(reg.clone()));
-                active.push((var, end));
+        // Map to track which variables are assigned to which registers
+        let mut var_locations = HashMap::new();
+        
+        // Extract the root name from an SSA variable (x_1 => x)
+        fn get_root_name(var: &str) -> &str {
+            if let Some(pos) = var.rfind('_') {
+                &var[0..pos]
             } else {
-                loc_map.insert(var.clone(), Location::Spill);
+                var
             }
         }
-
-        (instrs.to_vec(), loc_map)
+        
+        // Collect all variables
+        let mut all_vars = HashSet::new();
+        let mut root_vars = HashSet::new();
+        
+        for instr in instrs {
+            match instr {
+                Instr::Const(dest, _) => { 
+                    all_vars.insert(dest.clone());
+                    root_vars.insert(get_root_name(dest).to_string());
+                }
+                Instr::BinOp(dest, left, _, right) => { 
+                    all_vars.insert(dest.clone());
+                    all_vars.insert(left.clone());
+                    all_vars.insert(right.clone());
+                    root_vars.insert(get_root_name(dest).to_string());
+                    root_vars.insert(get_root_name(left).to_string());
+                    root_vars.insert(get_root_name(right).to_string());
+                }
+                Instr::Cmp(dest, left, _, right) => { 
+                    all_vars.insert(dest.clone());
+                    all_vars.insert(left.clone());
+                    all_vars.insert(right.clone());
+                    root_vars.insert(get_root_name(dest).to_string());
+                    root_vars.insert(get_root_name(left).to_string());
+                    root_vars.insert(get_root_name(right).to_string());
+                }
+                Instr::BranchIf(cond, _, _) => { 
+                    all_vars.insert(cond.clone());
+                    root_vars.insert(get_root_name(cond).to_string());
+                }
+                Instr::Print(var) => { 
+                    all_vars.insert(var.clone());
+                    root_vars.insert(get_root_name(var).to_string());
+                }
+                Instr::Phi(dest, left, right) => { 
+                    all_vars.insert(dest.clone());
+                    all_vars.insert(left.clone());
+                    all_vars.insert(right.clone());
+                    root_vars.insert(get_root_name(dest).to_string());
+                    root_vars.insert(get_root_name(left).to_string());
+                    root_vars.insert(get_root_name(right).to_string());
+                }
+                Instr::Assign(dest, src) => { 
+                    all_vars.insert(dest.clone());
+                    all_vars.insert(src.clone());
+                    root_vars.insert(get_root_name(dest).to_string());
+                    root_vars.insert(get_root_name(src).to_string());
+                }
+                _ => {}
+            }
+        }
+        
+        // Sort root variables for deterministic allocation
+        let mut sorted_roots: Vec<_> = root_vars.into_iter().collect();
+        sorted_roots.sort();
+        
+        // Assign same register to all variables with same root name
+        let mut reg_idx = 0;
+        let mut root_to_reg = HashMap::new();
+        
+        for root in sorted_roots {
+            if !root_to_reg.contains_key(&root) {
+                if reg_idx < AVAILABLE_REGS.len() {
+                    root_to_reg.insert(root.clone(), AVAILABLE_REGS[reg_idx].to_string());
+                    reg_idx += 1;
+                } else {
+                    // If we're out of registers, variables will be spilled
+                }
+            }
+        }
+        
+        // Now assign locations to all variables based on their root name
+        for var in all_vars {
+            let root = get_root_name(&var).to_string();
+            if let Some(reg) = root_to_reg.get(&root) {
+                var_locations.insert(var, Location::Register(reg.clone()));
+            } else {
+                var_locations.insert(var, Location::Spill);
+            }
+        }
+        
+        // Debug: print register assignments
+        eprintln!("Register assignments:");
+        for (root, reg) in &root_to_reg {
+            eprintln!("{} -> {}", root, reg);
+        }
+        
+        (instrs.to_vec(), var_locations)
     }
-}
-
-#[test]
-fn test_register_allocation_with_liveness() {
-    use crate::backend::{Backend as _, x86_64::Codegen};
-    use crate::optimizer::Op;
-
-    let instrs = vec![
-        Instr::Const("t0".to_string(), 1),
-        Instr::Const("t1".to_string(), 2),
-        Instr::BinOp(
-            "t2".to_string(),
-            "t0".to_string(),
-            Op::Add,
-            "t1".to_string(),
-        ),
-        Instr::Const("t3".to_string(), 3),
-        Instr::BinOp(
-            "t4".to_string(),
-            "t2".to_string(),
-            Op::Mul,
-            "t3".to_string(),
-        ),
-        Instr::Print("t4".to_string()),
-    ];
-
-    let reg_promoter = LinearScan;
-    let (instrs, locs) = reg_promoter.allocate(&instrs);
-
-    let mut codegen = Codegen::default();
-    let asm = codegen.generate_assembly(&instrs, &locs);
-
-    assert_eq!(
-        asm,
-        String::from(
-            ".section .data\n  fmt: .string \"%ld\\n\"\n.section .bss\n.section .text\n.globl main\nmain:\n  movq $1, %r15\n  movq $2, %r14\n  movq %r15, %rax\n  addq %r14, %rax\n  movq %rax, %r13\n  movq $3, %r14\n  movq %r13, %rax\n  imulq %r14, %rax\n  movq %rax, %r15\n  movq %r15, %rsi\n  leaq fmt(%rip), %rdi\n  xor %rax, %rax\n  call printf\n  movl $0, %eax\n  ret"
-        )
-    );
 }

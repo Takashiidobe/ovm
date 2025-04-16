@@ -119,7 +119,21 @@ impl Backend for Codegen {
                 Instr::Jump(label) => {
                     if let Some(moves) = self.phi_moves.get(label) {
                         for (src, dest) in moves {
-                            asm.push(format!("movq {}, {}", resolve(src), resolve(dest)));
+                            let src_loc = resolve(src);
+                            let dest_loc = resolve(dest);
+                            
+                            // Check if both source and destination are memory locations
+                            let is_src_mem = src_loc.contains("(%rip)");
+                            let is_dest_mem = dest_loc.contains("(%rip)");
+                            
+                            if is_src_mem && is_dest_mem {
+                                // Use %rax as a scratch register for memory-to-memory moves
+                                asm.push(format!("movq {}, %rax", src_loc));
+                                asm.push(format!("movq %rax, {}", dest_loc));
+                            } else {
+                                // Direct move is possible
+                                asm.push(format!("movq {}, {}", src_loc, dest_loc));
+                            }
                         }
                     }
                     asm.push(format!("jmp {}", label));
@@ -166,10 +180,22 @@ impl Backend for Codegen {
                     }
                 }
                 Instr::Assign(dest, src) => {
-                    let dest = resolve(dest);
-                    let src = resolve(src);
+                    let dest_loc = resolve(dest);
+                    let src_loc = resolve(src);
 
-                    asm.push(format!("movq {}, {}", src, dest));
+                    // Check if both source and destination are memory locations
+                    let is_src_mem = src_loc.contains("(%rip)");
+                    let is_dest_mem = dest_loc.contains("(%rip)");
+
+                    if is_src_mem && is_dest_mem {
+                        // Can't move directly between memory locations in x86-64
+                        // Use %rax as a scratch register
+                        asm.push(format!("movq {}, %rax", src_loc));
+                        asm.push(format!("movq %rax, {}", dest_loc));
+                    } else {
+                        // Direct register-to-register or memory-to-register or register-to-memory move
+                        asm.push(format!("movq {}, {}", src_loc, dest_loc));
+                    }
                 }
             }
         }
