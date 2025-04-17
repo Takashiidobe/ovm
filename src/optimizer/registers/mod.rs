@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+pub mod linear_scan;
 
+use std::collections::HashMap;
 use super::Instr;
 
 pub const AVAILABLE_REGS: [&str; 6] = ["%rbx", "%rbp", "%r12", "%r13", "%r14", "%r15"];
@@ -14,4 +15,3 @@ pub trait RegisterAllocator {
     fn allocate(&self, instrs: &[Instr]) -> (Vec<Instr>, HashMap<String, Location>);
 }
 
-pub mod linear_scan;

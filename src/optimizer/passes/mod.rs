@@ -1,8 +1,8 @@
-pub mod pass;
 pub mod constant_folding;
 pub mod dead_code_elimination;
+pub mod pass;
 
-use crate::optimizer::{Instr, Op, CmpOp};
+use crate::optimizer::Instr;
 
 pub use constant_folding::ConstantFolding;
 pub use dead_code_elimination::DeadCodeElimination;
@@ -23,7 +23,7 @@ impl Optimizer {
     pub fn run_all(&self, instrs: Vec<Instr>) -> Vec<Instr> {
         let cf = ConstantFolding;
         let dce = DeadCodeElimination;
-        
+
         // First run constant folding, then dead code elimination
         let folded = cf.optimize(instrs);
         dce.optimize(folded)
@@ -32,7 +32,7 @@ impl Optimizer {
     /// Run specific optimization passes in the given order
     pub fn run(&self, instrs: Vec<Instr>, passes: Vec<PassType>) -> Vec<Instr> {
         let mut result = instrs;
-        
+
         for pass_type in passes {
             match pass_type {
                 PassType::ConstantFolding => {
@@ -45,16 +45,19 @@ impl Optimizer {
                 }
             }
         }
-        
+
         result
     }
-}
 
+    pub fn run_none(&self, instrs: Vec<Instr>) -> Vec<Instr> {
+        instrs
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::{Instr, Op, CmpOp};
+    use crate::optimizer::{CmpOp, Instr, Op};
 
     #[test]
     fn test_optimizer() {
@@ -157,3 +160,4 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 }
+

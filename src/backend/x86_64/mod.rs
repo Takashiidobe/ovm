@@ -6,7 +6,6 @@ use super::Backend;
 
 #[derive(Default, Clone)]
 pub struct Codegen {
-    last_cmp_op: Option<CmpOp>,
     phi_moves: BTreeMap<String, Vec<(String, String)>>,
 }
 
@@ -88,44 +87,41 @@ impl Backend for Codegen {
                     asm.push("xor %rax, %rax".to_string());
                     asm.push("call printf".to_string());
                 }
-                Instr::Cmp(_, left, cmp_op, right) => {
+                Instr::Cmp(dest, left, cmp_op, right) => {
+                    let dest = resolve(dest);
                     let l = resolve(left);
                     let r = resolve(right);
                     asm.push(format!("cmpq {}, {}", r, l));
-                    self.last_cmp_op = Some(cmp_op.clone());
+                    asm.push(
+                        match cmp_op {
+                            CmpOp::Eq => "sete %al",
+                            CmpOp::Neq => "setne %al",
+                            CmpOp::Lt => "setl %al",
+                            CmpOp::Lte => "setle %al",
+                            CmpOp::Gt => "setg %al",
+                            CmpOp::Gte => "setge %al",
+                        }
+                        .to_string(),
+                    );
+                    asm.push(format!("movzb %al, {}", dest));
                 }
                 Instr::BranchIf(cond, then_label, else_label) => {
-                    if let Some(cmp_op) = self.last_cmp_op.take() {
-                        // Emit jump based on condition flags set by Cmp
-                        let jmp = match cmp_op {
-                            CmpOp::Eq => "je",
-                            CmpOp::Neq => "jne",
-                            CmpOp::Lt => "jl",
-                            CmpOp::Lte => "jle",
-                            CmpOp::Gt => "jg",
-                            CmpOp::Gte => "jge",
-                        };
-                        asm.push(format!("{} {}", jmp, then_label));
-                        asm.push(format!("jmp {}", else_label));
-                    } else {
-                        // Use value of cond as a boolean (0 or nonzero)
-                        let reg = resolve(cond);
-                        asm.push(format!("movq {}, %rax", reg));
-                        asm.push("testq %rax, %rax".to_string());
-                        asm.push(format!("jne {}", then_label));
-                        asm.push(format!("jmp {}", else_label));
-                    }
+                    let reg = resolve(cond);
+                    asm.push(format!("movq {}, %rax", reg));
+                    asm.push("testq %rax, %rax".to_string());
+                    asm.push(format!("jne {}", then_label));
+                    asm.push(format!("jmp {}", else_label));
                 }
                 Instr::Jump(label) => {
                     if let Some(moves) = self.phi_moves.get(label) {
                         for (src, dest) in moves {
                             let src_loc = resolve(src);
                             let dest_loc = resolve(dest);
-                            
+
                             // Check if both source and destination are memory locations
                             let is_src_mem = src_loc.contains("(%rip)");
                             let is_dest_mem = dest_loc.contains("(%rip)");
-                            
+
                             if is_src_mem && is_dest_mem {
                                 // Use %rax as a scratch register for memory-to-memory moves
                                 asm.push(format!("movq {}, %rax", src_loc));
@@ -167,7 +163,9 @@ impl Backend for Codegen {
                             .push((from_else.clone(), dest.clone()));
                     } else {
                         // Fallback to default behavior
-                        eprintln!("Warning: Could not find branch labels for phi node, using default.");
+                        eprintln!(
+                            "Warning: Could not find branch labels for phi node, using default."
+                        );
                         self.phi_moves
                             .entry("then_4".to_string())
                             .or_default()
@@ -189,7 +187,8 @@ impl Backend for Codegen {
 
                     if is_src_mem && is_dest_mem {
                         // Can't move directly between memory locations in x86-64
-                        // Use %rax as a scratch register
+                        // we need to evict a register.
+                        // Let's pick %rax arbitrarily, move it to where the
                         asm.push(format!("movq {}, %rax", src_loc));
                         asm.push(format!("movq %rax, {}", dest_loc));
                     } else {

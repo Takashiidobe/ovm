@@ -50,6 +50,7 @@ pub struct SSA {
     temp_counter: usize,
     variable_versions: HashMap<String, usize>,
     scopes: Vec<HashMap<String, String>>,
+    instructions: Vec<Instr>,
 }
 
 impl SSA {
@@ -57,8 +58,8 @@ impl SSA {
         self.scopes.push(HashMap::new());
     }
 
-    fn exit_scope(&mut self) {
-        self.scopes.pop();
+    fn exit_scope(&mut self) -> HashMap<String, String> {
+        self.scopes.pop().expect("No scope exists")
     }
 
     fn define_variable(&mut self, name: &str, ssa_name: String) {
@@ -109,37 +110,36 @@ impl SSA {
     }
 
     pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
-        let mut instrs = Vec::new();
         for stmt in stmts {
-            self.stmt_to_ir(stmt, &mut instrs);
+            self.stmt_to_ir(stmt);
         }
-        instrs
+        self.instructions.clone()
     }
 
-    fn stmt_to_ir(&mut self, stmt: &Stmt, instrs: &mut Vec<Instr>) -> String {
+    fn stmt_to_ir(&mut self, stmt: &Stmt) -> String {
         match stmt {
-            Stmt::Expression { expr } => self.expr_to_ir(expr, instrs),
+            Stmt::Expression { expr } => self.expr_to_ir(expr),
             Stmt::Print { expr } => {
-                let to_print = self.expr_to_ir(expr, instrs);
-                instrs.push(Instr::Print(to_print.clone()));
+                let to_print = self.expr_to_ir(expr);
+                self.emit(Instr::Print(to_print.clone()));
                 to_print
             }
             Stmt::While { condition, body } => {
-                let loop_start = self.new_label("while_start");
-                let loop_body = self.new_label("while_body");
-                let loop_end = self.new_label("while_end");
+                let loop_start = self.new_label("loop_start");
+                let loop_body = self.new_label("loop_body");
+                let loop_end = self.new_label("loop_end");
 
                 // Step 1: Capture outer scope before loop
                 let outer_scope = self.scopes.last().cloned().unwrap_or_default();
 
                 // Step 2: Emit loop header
-                instrs.push(Instr::Label(loop_start.clone()));
+                self.emit(Instr::Label(loop_start.clone()));
 
                 // Step 3: Create Phi nodes for loop-carried variables
-                let mut phi_vars = HashMap::new(); // var_name → phi_name
+                let mut phi_vars = HashMap::new(); // var_name -> phi_name
                 for (var, outer_val) in &outer_scope {
                     let phi_temp = self.new_temp();
-                    instrs.push(Instr::Phi(
+                    self.emit(Instr::Phi(
                         phi_temp.clone(),
                         outer_val.clone(),
                         outer_val.clone(),
@@ -149,25 +149,25 @@ impl SSA {
                 }
 
                 // Step 4: Emit condition check
-                let cond_temp = self.expr_to_ir(condition, instrs);
-                instrs.push(Instr::BranchIf(
+                let cond_temp = self.expr_to_ir(condition);
+                self.emit(Instr::BranchIf(
                     cond_temp.clone(),
                     loop_body.clone(),
                     loop_end.clone(),
                 ));
 
                 // Step 5: Loop body
-                instrs.push(Instr::Label(loop_body.clone()));
+                self.emit(Instr::Label(loop_body.clone()));
 
                 let updated_vars = self.with_scope(|ssa| {
-                    ssa.stmt_to_ir(body, instrs);
+                    ssa.stmt_to_ir(body);
                     ssa.scopes.last().cloned().unwrap_or_default()
                 });
 
                 // Step 6: Update Phi backedges (only if values changed)
                 for (var, phi_name) in &phi_vars {
                     if let Some(updated_val) = updated_vars.get(var) {
-                        instrs.push(Instr::Phi(
+                        self.emit(Instr::Phi(
                             phi_name.clone(),
                             outer_scope.get(var).unwrap().clone(),
                             updated_val.clone(),
@@ -177,14 +177,14 @@ impl SSA {
                 }
 
                 // Step 7: Loop back
-                instrs.push(Instr::Jump(loop_start.clone()));
+                self.emit(Instr::Jump(loop_start.clone()));
 
                 // Step 8: Exit loop
-                instrs.push(Instr::Label(loop_end.clone()));
+                self.emit(Instr::Label(loop_end.clone()));
 
                 // Step 9: Dummy result (loops don't produce a meaningful value)
                 let result = self.new_temp();
-                instrs.push(Instr::Const(result.clone(), 0));
+                self.emit(Instr::Const(result.clone(), 0));
 
                 result
             }
@@ -193,50 +193,61 @@ impl SSA {
                 then_branch,
                 else_branch,
             } => {
-                let cond_t = self.expr_to_ir(condition, instrs);
-                let then_label = self.new_label("then");
-                let else_label = self.new_label("else");
-                let merge_label = self.new_label("merge");
+                // first, evaluate the expression.
+                let cond_t = self.expr_to_ir(condition);
 
-                instrs.push(Instr::BranchIf(
+                // then emit the if branch, the else branch, and the merge label.
+                // The if and else go to the merge label after execution.
+                let then_label = self.new_label("cond_then");
+                let else_label = self.new_label("cond_else");
+                let merge_label = self.new_label("cond_merge");
+
+                // Then emit the instruction
+                self.emit(Instr::BranchIf(
                     cond_t.clone(),
                     then_label.clone(),
                     else_label.clone(),
                 ));
 
+                // We then create a new scope for the if branch
                 let (then_result, then_scope) = {
-                    instrs.push(Instr::Label(then_label.clone()));
+                    // we emit the then label after the if
+                    self.emit(Instr::Label(then_label.clone()));
                     let mut result = String::new();
                     let scope = self.with_scope(|ssa| {
-                        result = ssa.stmt_to_ir(then_branch, instrs);
+                        result = ssa.stmt_to_ir(then_branch);
                         ssa.scopes.last().cloned().unwrap_or_default()
                     });
-                    instrs.push(Instr::Jump(merge_label.clone()));
+                    self.emit(Instr::Jump(merge_label.clone()));
                     (result, scope)
                 };
 
                 let (else_result, else_scope) = {
-                    instrs.push(Instr::Label(else_label.clone()));
-                    let mut result = String::new();
-                    let scope = self.with_scope(|ssa| {
-                        if let Some(else_stmt) = *else_branch.clone() {
-                            result = ssa.stmt_to_ir(&else_stmt, instrs);
-                        } else {
-                            result = ssa.new_temp();
-                            instrs.push(Instr::Const(result.clone(), 0));
-                        }
-                        ssa.scopes.last().cloned().unwrap_or_default()
-                    });
-                    instrs.push(Instr::Jump(merge_label.clone()));
+                    self.enter_scope();
+                    self.emit(Instr::Label(else_label.clone()));
+
+                    let (result, scope) = if let Some(else_stmt) = *else_branch.clone() {
+                        (
+                            self.stmt_to_ir(&else_stmt),
+                            self.scopes.last().cloned().unwrap_or_default(),
+                        )
+                    } else {
+                        let result = self.new_temp();
+                        self.emit(Instr::Const(result.clone(), 0));
+                        (result, self.scopes.last().cloned().unwrap_or_default())
+                    };
+                    self.emit(Instr::Jump(merge_label.clone()));
+
                     (result, scope)
                 };
 
-                instrs.push(Instr::Label(merge_label.clone()));
+                self.emit(Instr::Label(merge_label.clone()));
+
                 self.enter_scope(); // merge scope must be explicitly re-entered
 
                 // Value result of the whole if-expression
                 let if_result = self.new_temp();
-                instrs.push(Instr::Phi(
+                self.emit(Instr::Phi(
                     if_result.clone(),
                     then_result.clone(),
                     else_result.clone(),
@@ -269,7 +280,7 @@ impl SSA {
                         // Case 1: Variable modified in both branches with different values
                         (Some(t1), Some(t2)) if t1 != t2 => {
                             let phi = self.new_temp();
-                            instrs.push(Instr::Phi(phi.clone(), t1.clone(), t2.clone()));
+                            self.emit(Instr::Phi(phi.clone(), t1.clone(), t2.clone()));
                             self.define_variable(var, phi);
                         }
                         // Case 2: Variable modified in only one branch
@@ -279,24 +290,24 @@ impl SSA {
                             let outer_val = outer_scope.get(var).cloned().unwrap_or_else(|| {
                                 // If not in outer scope, create a dummy value
                                 let dummy = self.new_temp();
-                                instrs.push(Instr::Const(dummy.clone(), 0));
+                                self.emit(Instr::Const(dummy.clone(), 0));
                                 dummy
                             });
 
                             let phi = self.new_temp();
-                            instrs.push(Instr::Phi(phi.clone(), t.clone(), outer_val));
+                            self.emit(Instr::Phi(phi.clone(), t.clone(), outer_val));
                             self.define_variable(var, phi);
                         }
                         (None, Some(t)) => {
                             // Similar to above but for else branch
                             let outer_val = outer_scope.get(var).cloned().unwrap_or_else(|| {
                                 let dummy = self.new_temp();
-                                instrs.push(Instr::Const(dummy.clone(), 0));
+                                self.emit(Instr::Const(dummy.clone(), 0));
                                 dummy
                             });
 
                             let phi = self.new_temp();
-                            instrs.push(Instr::Phi(phi.clone(), outer_val, t.clone()));
+                            self.emit(Instr::Phi(phi.clone(), outer_val, t.clone()));
                             self.define_variable(var, phi);
                         }
                         // Case 3: Variable not modified in either branch, use outer scope
@@ -320,7 +331,7 @@ impl SSA {
             Stmt::Block { statements } => {
                 let mut ret = String::default();
                 for stmt in statements {
-                    ret = self.stmt_to_ir(stmt, instrs)
+                    ret = self.stmt_to_ir(stmt)
                 }
                 ret
             }
@@ -328,23 +339,23 @@ impl SSA {
                 let expr = initializer
                     .clone()
                     .unwrap_or(Expr::Literal { value: Object::Nil });
-                let rhs_temp = self.expr_to_ir(&expr, instrs);
+                let rhs_temp = self.expr_to_ir(&expr);
                 let ssa_name = self.next_versioned_name(&name.lexeme);
                 self.define_variable(&name.lexeme, ssa_name.clone());
-                instrs.push(Instr::Assign(ssa_name.clone(), rhs_temp));
+                self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
                 ssa_name
             }
-            stmt => panic!("{stmt:?}"),
+            stmt => panic!("Statement not supported: {stmt:?}"),
         }
     }
 
-    fn expr_to_ir(&mut self, expr: &Expr, instrs: &mut Vec<Instr>) -> String {
+    fn expr_to_ir(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::Literal { value } => match value {
                 // TODO: support turning the other types into literals
                 Object::Integer(n) => {
                     let temp = self.new_temp();
-                    instrs.push(Instr::Const(temp.clone(), *n));
+                    self.emit(Instr::Const(temp.clone(), *n));
                     temp
                 }
                 _ => todo!(),
@@ -354,53 +365,53 @@ impl SSA {
                 right,
                 operator,
             } => {
-                let l = self.expr_to_ir(left, instrs);
-                let r = self.expr_to_ir(right, instrs);
+                let l = self.expr_to_ir(left);
+                let r = self.expr_to_ir(right);
                 let temp = self.new_temp();
                 match operator.r#type {
-                    TokenType::Plus => instrs.push(Instr::BinOp(temp.clone(), l, Op::Add, r)),
-                    TokenType::Minus => instrs.push(Instr::BinOp(temp.clone(), l, Op::Sub, r)),
-                    TokenType::Star => instrs.push(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
-                    TokenType::Slash => instrs.push(Instr::BinOp(temp.clone(), l, Op::Div, r)),
-                    TokenType::EqualEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::BangEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::LessEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
+                    TokenType::Plus => self.emit(Instr::BinOp(temp.clone(), l, Op::Add, r)),
+                    TokenType::Minus => self.emit(Instr::BinOp(temp.clone(), l, Op::Sub, r)),
+                    TokenType::Star => self.emit(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
+                    TokenType::Slash => self.emit(Instr::BinOp(temp.clone(), l, Op::Div, r)),
+                    TokenType::EqualEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::BangEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::LessEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
                     TokenType::GreaterEqual => {
-                        instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
+                        self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
                     }
-                    TokenType::Less => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
-                    TokenType::Greater => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
+                    TokenType::Less => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
+                    TokenType::Greater => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
                     _ => unreachable!(),
                 };
 
                 temp
             }
-            Expr::Grouping { expr } => self.expr_to_ir(expr, instrs),
+            Expr::Grouping { expr } => self.expr_to_ir(expr),
             Expr::Logical {
                 left,
                 operator,
                 right,
             } => {
-                let l = self.expr_to_ir(left, instrs);
-                let r = self.expr_to_ir(right, instrs);
+                let l = self.expr_to_ir(left);
+                let r = self.expr_to_ir(right);
                 let temp = self.new_temp();
                 match operator.r#type {
-                    TokenType::EqualEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::BangEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::LessEqual => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
+                    TokenType::EqualEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::BangEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::LessEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
                     TokenType::GreaterEqual => {
-                        instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
+                        self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
                     }
-                    TokenType::Less => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
-                    TokenType::Greater => instrs.push(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
+                    TokenType::Less => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
+                    TokenType::Greater => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
                     _ => unreachable!(),
                 };
                 temp
             }
             Expr::Assign { name, value } => {
-                let rhs_temp = self.expr_to_ir(value, instrs);
+                let rhs_temp = self.expr_to_ir(value);
                 let ssa_name = self.next_versioned_name(&name.lexeme);
-                instrs.push(Instr::Assign(ssa_name.clone(), rhs_temp));
+                self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
                 self.define_variable(&name.lexeme, ssa_name.clone());
 
                 ssa_name
@@ -409,7 +420,11 @@ impl SSA {
                 Some(ssa_name) => ssa_name.clone(),
                 None => panic!("Unresolved variable {}", name.lexeme),
             },
-            e => panic!("{e:?}"),
+            e => panic!("Unsupported expr: {e:?}"),
         }
+    }
+
+    fn emit(&mut self, instr: Instr) {
+        self.instructions.push(instr);
     }
 }
