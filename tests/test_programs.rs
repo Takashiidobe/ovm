@@ -19,7 +19,7 @@ fn reference_files() {
     glob!("./programs", "**/*.ovm", |path| {
         let file_stem = path.file_stem().unwrap().to_string_lossy();
         let test_name = file_stem.to_string();
-        let input = read_to_string(&path).expect("Path doesn't exist");
+        let input = read_to_string(path).expect("Path doesn't exist");
 
         // Create a temporary directory for the test
         let temp_dir = tempdir().expect("Failed to create temp dir");
@@ -61,7 +61,7 @@ fn reference_files() {
 
         // Run the compiled binary and capture output
         let run_output = Command::new(&bin_path)
-            .current_dir(&temp_path)
+            .current_dir(temp_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()

@@ -36,10 +36,11 @@ impl Backend for Codegen {
 
         // Emit code
         let resolve = |t: &String| -> String {
-            match locations.get(t).unwrap_or_else(|| {
-                dbg!(&locations);
-                panic!("Could not find temporary variable {t}")
-            }) {
+            dbg!(&locations);
+            match locations
+                .get(t)
+                .unwrap_or_else(|| panic!("Could not find temporary variable {t}"))
+            {
                 Location::Register(reg) => reg.clone(),
                 Location::Spill => format!("{}(%rip)", t),
             }
