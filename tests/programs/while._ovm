@@ -1,0 +1,8 @@
+var x = 5;
+
+while (x < 7) {
+	print x; // expect: 5, 6
+	x = x + 1;
+}
+
+print x; // expect: 7

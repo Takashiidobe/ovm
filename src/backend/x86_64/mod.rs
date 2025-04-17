@@ -112,21 +112,7 @@ impl Backend for Codegen {
                 Instr::Jump(label) => {
                     if let Some(moves) = self.phi_moves.get(label) {
                         for (src, dest) in moves.clone() {
-                            let src_loc = resolve(&src);
-                            let dest_loc = resolve(&dest);
-
-                            // Check if both source and destination are memory locations
-                            let is_src_mem = src_loc.contains("(%rip)");
-                            let is_dest_mem = dest_loc.contains("(%rip)");
-
-                            if is_src_mem && is_dest_mem {
-                                // Use %rax as a scratch register for memory-to-memory moves
-                                self.add(format!("movq {}, %rax", src_loc));
-                                self.add(format!("movq %rax, {}", dest_loc));
-                            } else {
-                                // Direct move is possible
-                                self.add(format!("movq {}, {}", src_loc, dest_loc));
-                            }
+                            self.move_memory(&resolve(&src), &resolve(&dest));
                         }
                     }
                     self.add(format!("jmp {}", label));
@@ -136,42 +122,33 @@ impl Backend for Codegen {
                 }
                 Instr::Phi(dest, from_then, from_else) => {
                     // Find corresponding branch labels by scanning previous instructions
-                    let mut then_label = String::new();
-                    let mut else_label = String::new();
+                    let mut then_label: Option<&str> = None;
+                    let mut else_label: Option<&str> = None;
 
                     // Look for the most recent BranchIf to find labels
                     for instr in instrs.iter().rev() {
                         if let Instr::BranchIf(_, t_label, e_label) = instr {
-                            then_label = t_label.clone();
-                            else_label = e_label.clone();
+                            then_label = Some(t_label);
+                            else_label = Some(e_label);
                             break;
                         }
                     }
 
-                    if !then_label.is_empty() && !else_label.is_empty() {
+                    if let (Some(t_label), Some(e_label)) = (then_label, else_label) {
                         self.phi_moves
-                            .entry(then_label)
+                            .entry(t_label.to_string())
                             .or_default()
                             .push((from_then.clone(), dest.clone()));
 
                         self.phi_moves
-                            .entry(else_label)
+                            .entry(e_label.to_string())
                             .or_default()
                             .push((from_else.clone(), dest.clone()));
                     } else {
-                        // Fallback to default behavior
-                        eprintln!(
-                            "Warning: Could not find branch labels for phi node, using default."
+                        panic!(
+                            "Could not find branch labels for phi nodes {:?}, {:?}",
+                            then_label, else_label
                         );
-                        self.phi_moves
-                            .entry("then_4".to_string())
-                            .or_default()
-                            .push((from_then.clone(), dest.clone()));
-
-                        self.phi_moves
-                            .entry("else_5".to_string())
-                            .or_default()
-                            .push((from_else.clone(), dest.clone()));
                     }
                 }
                 Instr::Assign(dest, src) => {
@@ -214,13 +191,12 @@ impl Codegen {
         let is_dest_mem = dest.contains("(%rip)");
 
         if is_src_mem && is_dest_mem {
-            // Can't move directly between memory locations in x86-64
-            // we need to evict a register.
-            // Let's pick %rax arbitrarily, move it to where the
+            // Can't move directly between memory locations in x86-64, so we need to evict a register
+            // Let's pick %rax arbitrarily, and use it as an intermediate
             self.add(format!("movq {}, %rax", src));
             self.add(format!("movq %rax, {}", dest));
         } else {
-            // Direct register-to-register or memory-to-register or register-to-memory move
+            // Direct move is allowed if either src or dest are a register
             self.add(format!("movq {}, {}", src, dest));
         }
     }
