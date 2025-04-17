@@ -1,0 +1,7 @@
+var x = 5;
+
+if (x > 10) {
+	print x;
+} else {
+	print 10; // expect: 10
+}

@@ -1,0 +1,14 @@
+---
+source: tests/test_programs.rs
+expression: test_output
+input_file: tests/programs/many_vars.ovm
+---
+status: 0
+stdout:
+  - "1"
+  - "2"
+  - "3"
+  - "4"
+  - "5"
+  - "6"
+stderr: []

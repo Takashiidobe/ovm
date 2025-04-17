@@ -87,8 +87,9 @@ impl RegisterAllocator for LinearScan {
         }
 
         // for debugging, print register assignments
+        eprintln!("Register map");
         for (root, reg) in &register_map {
-            dbg!("{} -> {}", root, reg);
+            eprintln!("{} -> {}", root, reg);
         }
 
         (instrs.to_vec(), var_locations)

@@ -1,0 +1,11 @@
+---
+source: tests/test_programs.rs
+expression: test_output
+input_file: tests/programs/scope.ovm
+---
+status: 0
+stdout:
+  - "5"
+  - "10"
+  - "5"
+stderr: []

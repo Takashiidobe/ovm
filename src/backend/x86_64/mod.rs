@@ -7,6 +7,7 @@ use super::Backend;
 #[derive(Default, Clone)]
 pub struct Codegen {
     phi_moves: BTreeMap<String, Vec<(String, String)>>,
+    asm: Vec<String>,
 }
 
 impl Backend for Codegen {
@@ -15,28 +16,25 @@ impl Backend for Codegen {
         instrs: &[Instr],
         locations: &HashMap<String, Location>,
     ) -> String {
-        let mut asm = Vec::new();
-
         // .data
-        asm.push(".section .data".to_string());
-        asm.push("fmt: .string \"%ld\\n\"".to_string());
+        self.add(".section .data");
+        self.add("fmt: .string \"%ld\\n\"");
 
         // .bss for spilled temps
-        asm.push(".section .bss".to_string());
+        self.add(".section .bss");
         for (temp, loc) in locations {
             if let Location::Spill = loc {
-                asm.push(format!("{}: .quad 0", temp));
+                self.add(format!("{}: .quad 0", temp));
             }
         }
 
         // .text
-        asm.push(".section .text".to_string());
-        asm.push(".globl main".to_string());
-        asm.push("main:".to_string());
+        self.add(".section .text");
+        self.add(".globl main");
+        self.add("main:");
 
         // Emit code
         let resolve = |t: &String| -> String {
-            dbg!(&locations);
             match locations
                 .get(t)
                 .unwrap_or_else(|| panic!("Could not find temporary variable {t}"))
@@ -52,7 +50,7 @@ impl Backend for Codegen {
             match instr {
                 Instr::Const(name, val) => {
                     let dst = resolve(name);
-                    asm.push(format!("movq ${}, {}", val, dst));
+                    self.add(format!("movq ${}, {}", val, dst));
                 }
                 Instr::BinOp(dest, left, op, right) => {
                     let l = resolve(left);
@@ -61,13 +59,13 @@ impl Backend for Codegen {
 
                     match op {
                         Op::Div => {
-                            asm.push(format!("movq {}, %rax", l));
-                            asm.push("cqto".to_string());
-                            asm.push(format!("idivq {}", r));
-                            asm.push(format!("movq %rax, {}", d));
+                            self.add(format!("movq {}, %rax", l));
+                            self.add("cqto");
+                            self.add(format!("idivq {}", r));
+                            self.add(format!("movq %rax, {}", d));
                         }
                         _ => {
-                            asm.push(format!("movq {}, %rax", l));
+                            self.add(format!("movq {}, %rax", l));
                             let op_instr = match op {
                                 Op::Add => "addq",
                                 Op::Sub => "subq",
@@ -76,47 +74,46 @@ impl Backend for Codegen {
                                 Op::BitAnd | Op::And => "andq",
                                 _ => unreachable!(),
                             };
-                            asm.push(format!("{} {}, %rax", op_instr, r));
-                            asm.push(format!("movq %rax, {}", d));
+                            self.add(format!("{} {}, %rax", op_instr, r));
+                            self.add(format!("movq %rax, {}", d));
                         }
                     }
                 }
                 Instr::Print(name) => {
                     let src = resolve(name);
-                    asm.push(format!("movq {src}, %rsi"));
-                    asm.push("leaq fmt(%rip), %rdi".to_string());
-                    asm.push("xor %rax, %rax".to_string());
-                    asm.push("call printf".to_string());
+                    self.add(format!("movq {src}, %rsi"));
+                    self.add("leaq fmt(%rip), %rdi");
+                    self.add("xor %rax, %rax");
+                    self.add("call printf");
                 }
                 Instr::Cmp(dest, left, cmp_op, right) => {
                     let dest = resolve(dest);
                     let l = resolve(left);
                     let r = resolve(right);
-                    asm.push(format!("cmpq {}, {}", r, l));
-                    asm.push(
-                        match cmp_op {
-                            CmpOp::Eq => "sete %al",
-                            CmpOp::Neq => "setne %al",
-                            CmpOp::Lt => "setl %al",
-                            CmpOp::Lte => "setle %al",
-                            CmpOp::Gt => "setg %al",
-                            CmpOp::Gte => "setge %al",
-                        }
-                        .to_string(),
-                    );
-                    asm.push(format!("movzb %al, {dest}"));
+                    self.add(format!("cmpq {}, {}", r, l));
+                    self.add(match cmp_op {
+                        CmpOp::Eq => "sete %al",
+                        CmpOp::Neq => "setne %al",
+                        CmpOp::Lt => "setl %al",
+                        CmpOp::Lte => "setle %al",
+                        CmpOp::Gt => "setg %al",
+                        CmpOp::Gte => "setge %al",
+                    });
+                    // movzb can only be moved to a register. Arbitrarily use %rax.
+                    self.add("movzb %al, %rax");
+                    self.add(format!("movq %rax, {dest}"));
                 }
                 Instr::BranchIf(cond, then_label, else_label) => {
                     let reg = resolve(cond);
-                    asm.push(format!("cmpq $0, {reg}"));
-                    asm.push(format!("je {}", else_label));
-                    asm.push(format!("jmp {}", then_label));
+                    self.add(format!("cmpq $0, {reg}"));
+                    self.add(format!("je {}", else_label));
+                    self.add(format!("jmp {}", then_label));
                 }
                 Instr::Jump(label) => {
                     if let Some(moves) = self.phi_moves.get(label) {
-                        for (src, dest) in moves {
-                            let src_loc = resolve(src);
-                            let dest_loc = resolve(dest);
+                        for (src, dest) in moves.clone() {
+                            let src_loc = resolve(&src);
+                            let dest_loc = resolve(&dest);
 
                             // Check if both source and destination are memory locations
                             let is_src_mem = src_loc.contains("(%rip)");
@@ -124,18 +121,18 @@ impl Backend for Codegen {
 
                             if is_src_mem && is_dest_mem {
                                 // Use %rax as a scratch register for memory-to-memory moves
-                                asm.push(format!("movq {}, %rax", src_loc));
-                                asm.push(format!("movq %rax, {}", dest_loc));
+                                self.add(format!("movq {}, %rax", src_loc));
+                                self.add(format!("movq %rax, {}", dest_loc));
                             } else {
                                 // Direct move is possible
-                                asm.push(format!("movq {}, {}", src_loc, dest_loc));
+                                self.add(format!("movq {}, {}", src_loc, dest_loc));
                             }
                         }
                     }
-                    asm.push(format!("jmp {}", label));
+                    self.add(format!("jmp {}", label));
                 }
                 Instr::Label(label) => {
-                    asm.push(format!("{}:", label));
+                    self.add(format!("{}:", label));
                 }
                 Instr::Phi(dest, from_then, from_else) => {
                     // Find corresponding branch labels by scanning previous instructions
@@ -178,31 +175,18 @@ impl Backend for Codegen {
                     }
                 }
                 Instr::Assign(dest, src) => {
-                    let dest_loc = resolve(dest);
-                    let src_loc = resolve(src);
+                    let dest = resolve(dest);
+                    let src = resolve(src);
 
-                    // Check if both source and destination are memory locations
-                    let is_src_mem = src_loc.contains("(%rip)");
-                    let is_dest_mem = dest_loc.contains("(%rip)");
-
-                    if is_src_mem && is_dest_mem {
-                        // Can't move directly between memory locations in x86-64
-                        // we need to evict a register.
-                        // Let's pick %rax arbitrarily, move it to where the
-                        asm.push(format!("movq {}, %rax", src_loc));
-                        asm.push(format!("movq %rax, {}", dest_loc));
-                    } else {
-                        // Direct register-to-register or memory-to-register or register-to-memory move
-                        asm.push(format!("movq {}, {}", src_loc, dest_loc));
-                    }
+                    self.move_memory(&src, &dest);
                 }
             }
         }
 
-        asm.push("movl $0, %eax".to_string());
-        asm.push("ret".to_string());
+        self.add("movl $0, %eax");
+        self.add("ret");
 
-        self.format_asm(&asm)
+        self.format_asm(&self.asm)
     }
 }
 
@@ -222,5 +206,26 @@ impl Codegen {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn move_memory(&mut self, src: &str, dest: &str) {
+        // Check if both source and destination are memory locations
+        let is_src_mem = src.contains("(%rip)");
+        let is_dest_mem = dest.contains("(%rip)");
+
+        if is_src_mem && is_dest_mem {
+            // Can't move directly between memory locations in x86-64
+            // we need to evict a register.
+            // Let's pick %rax arbitrarily, move it to where the
+            self.add(format!("movq {}, %rax", src));
+            self.add(format!("movq %rax, {}", dest));
+        } else {
+            // Direct register-to-register or memory-to-register or register-to-memory move
+            self.add(format!("movq {}, {}", src, dest));
+        }
+    }
+
+    fn add<S: AsRef<str>>(&mut self, line: S) {
+        self.asm.push(line.as_ref().to_string());
     }
 }

@@ -1,0 +1,9 @@
+---
+source: tests/test_programs.rs
+expression: test_output
+input_file: tests/programs/else.ovm
+---
+status: 0
+stdout:
+  - "10"
+stderr: []
