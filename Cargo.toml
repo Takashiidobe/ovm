@@ -5,3 +5,9 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
+tempfile = "3.19.1"
+
+[dev-dependencies]
+assert_cmd = "2.0.17"
+insta = { version = "1.42.2", features = ["yaml", "glob"] }
+serde = { version = "1.0.219", features = ["derive"] }

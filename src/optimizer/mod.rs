@@ -45,12 +45,25 @@ pub enum Op {
     Or,
 }
 
-#[derive(Default, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct SSA {
     temp_counter: usize,
-    variable_versions: HashMap<String, usize>,
+    label_counter: usize,
     scopes: Vec<HashMap<String, String>>,
     instructions: Vec<Instr>,
+    var_versions: HashMap<String, u64>,
+}
+
+impl Default for SSA {
+    fn default() -> Self {
+        Self {
+            scopes: vec![HashMap::new()],
+            temp_counter: Default::default(),
+            label_counter: Default::default(),
+            instructions: Default::default(),
+            var_versions: Default::default(),
+        }
+    }
 }
 
 impl SSA {
@@ -62,14 +75,21 @@ impl SSA {
         self.scopes.pop().expect("No scope exists")
     }
 
-    fn define_variable(&mut self, name: &str, ssa_name: String) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), ssa_name);
-        } else {
-            let mut scope = HashMap::new();
-            scope.insert(name.to_string(), ssa_name);
-            self.scopes.push(scope);
-        }
+    fn new_var_version(&mut self, name: &str) -> String {
+        let version = self.var_versions.entry(name.to_string()).or_default();
+        *version += 1;
+        format!("{}_{}", name, version)
+    }
+
+    fn define_variable(&mut self, name: &str) -> String {
+        let var_name = self.new_var_version(name);
+
+        self.scopes
+            .last_mut()
+            .unwrap()
+            .insert(name.to_string(), var_name.clone());
+
+        var_name
     }
 
     fn resolve_variable(&self, name: &str) -> Option<&String> {
@@ -91,22 +111,16 @@ impl SSA {
         result
     }
 
+    fn new_label(&mut self, base: &str) -> String {
+        let name = format!("{}_{}", base, self.label_counter);
+        self.label_counter += 1;
+        name
+    }
+
     fn new_temp(&mut self) -> String {
         let name = format!("t{}", self.temp_counter);
         self.temp_counter += 1;
         name
-    }
-
-    fn new_label(&mut self, base: &str) -> String {
-        let name = format!("{}_{}", base, self.temp_counter);
-        self.temp_counter += 1;
-        name
-    }
-
-    fn next_versioned_name(&mut self, var: &str) -> String {
-        let version = self.variable_versions.entry(var.to_string()).or_insert(0);
-        *version += 1;
-        format!("{}_{}", var, *version)
     }
 
     pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
@@ -144,7 +158,7 @@ impl SSA {
                         outer_val.clone(),
                         outer_val.clone(),
                     ));
-                    self.define_variable(var, phi_temp.clone());
+                    self.define_variable(var);
                     phi_vars.insert(var.clone(), phi_temp);
                 }
 
@@ -172,7 +186,7 @@ impl SSA {
                             outer_scope.get(var).unwrap().clone(),
                             updated_val.clone(),
                         ));
-                        self.define_variable(var, phi_name.clone()); // Rebind phi result for next iterations
+                        self.define_variable(var); // Rebind phi result for next iterations
                     }
                 }
 
@@ -281,7 +295,7 @@ impl SSA {
                         (Some(t1), Some(t2)) if t1 != t2 => {
                             let phi = self.new_temp();
                             self.emit(Instr::Phi(phi.clone(), t1.clone(), t2.clone()));
-                            self.define_variable(var, phi);
+                            self.define_variable(var);
                         }
                         // Case 2: Variable modified in only one branch
                         (Some(t), None) => {
@@ -296,7 +310,7 @@ impl SSA {
 
                             let phi = self.new_temp();
                             self.emit(Instr::Phi(phi.clone(), t.clone(), outer_val));
-                            self.define_variable(var, phi);
+                            self.define_variable(var);
                         }
                         (None, Some(t)) => {
                             // Similar to above but for else branch
@@ -308,20 +322,20 @@ impl SSA {
 
                             let phi = self.new_temp();
                             self.emit(Instr::Phi(phi.clone(), outer_val, t.clone()));
-                            self.define_variable(var, phi);
+                            self.define_variable(var);
                         }
                         // Case 3: Variable not modified in either branch, use outer scope
                         (None, None) => {
-                            if let Some(t) = outer_scope.get(var) {
+                            if outer_scope.contains_key(var) {
                                 // Just bring the outer scope value into current scope
-                                self.define_variable(var, t.clone());
+                                self.define_variable(var);
                             }
                             // Do nothing if not in any scope
                         }
                         // Case 4: Modified in both branches with same value
                         (Some(t1), Some(t2)) if t1 == t2 => {
                             // No phi needed, just use the same value
-                            self.define_variable(var, t1.clone());
+                            self.define_variable(var);
                         }
                         _ => unreachable!(),
                     }
@@ -329,19 +343,26 @@ impl SSA {
                 if_result
             }
             Stmt::Block { statements } => {
-                let mut ret = String::default();
-                for stmt in statements {
-                    ret = self.stmt_to_ir(stmt)
-                }
-                ret
+                self.with_scope(|ssa| {
+                    for stmt in statements {
+                        ssa.stmt_to_ir(stmt);
+                    }
+                });
+                String::default()
             }
             Stmt::Var { name, initializer } => {
                 let expr = initializer
                     .clone()
                     .unwrap_or(Expr::Literal { value: Object::Nil });
                 let rhs_temp = self.expr_to_ir(&expr);
-                let ssa_name = self.next_versioned_name(&name.lexeme);
-                self.define_variable(&name.lexeme, ssa_name.clone());
+                let var_name = match name.literal.clone().unwrap() {
+                    Object::String(name) => name,
+                    _ => panic!(
+                        "left side of variable is not an identifier, {:?}",
+                        name.literal
+                    ),
+                };
+                let ssa_name = self.define_variable(&var_name);
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
                 ssa_name
             }
@@ -410,15 +431,22 @@ impl SSA {
             }
             Expr::Assign { name, value } => {
                 let rhs_temp = self.expr_to_ir(value);
-                let ssa_name = self.next_versioned_name(&name.lexeme);
+                let var_name = match name.literal.clone().unwrap() {
+                    Object::String(name) => name,
+                    _ => panic!(
+                        "left side of variable is not an identifier, {:?}",
+                        name.literal
+                    ),
+                };
+                let ssa_name = self.define_variable(&var_name);
+
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
-                self.define_variable(&name.lexeme, ssa_name.clone());
 
                 ssa_name
             }
             Expr::Variable { name } => match self.resolve_variable(&name.lexeme) {
                 Some(ssa_name) => ssa_name.clone(),
-                None => panic!("Unresolved variable {}", name.lexeme),
+                None => panic!("Variable called before definition {}", name.lexeme),
             },
             e => panic!("Unsupported expr: {e:?}"),
         }

@@ -82,7 +82,7 @@ impl Backend for Codegen {
                 }
                 Instr::Print(name) => {
                     let src = resolve(name);
-                    asm.push(format!("movq {}, %rsi", src));
+                    asm.push(format!("movq {src}, %rsi"));
                     asm.push("leaq fmt(%rip), %rdi".to_string());
                     asm.push("xor %rax, %rax".to_string());
                     asm.push("call printf".to_string());
@@ -103,7 +103,7 @@ impl Backend for Codegen {
                         }
                         .to_string(),
                     );
-                    asm.push(format!("movzb %al, {}", dest));
+                    asm.push(format!("movzb %al, {dest}"));
                 }
                 Instr::BranchIf(cond, then_label, else_label) => {
                     let reg = resolve(cond);

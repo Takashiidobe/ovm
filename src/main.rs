@@ -12,7 +12,13 @@ use ovm::optimizer::registers::linear_scan::LinearScan;
 fn main() {
     let cli = Cli::parse();
 
-    let mut tokenizer = Tokenizer::new(cli.expression);
+    let input = if cli.expression.ends_with(".ovm") {
+        std::fs::read_to_string(&cli.expression).unwrap()
+    } else {
+        cli.expression.clone()
+    };
+
+    let mut tokenizer = Tokenizer::new(input);
 
     let tokens: Vec<Token> = tokenizer.scan_tokens();
 

@@ -2,6 +2,18 @@ use std::fs::File;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+macro_rules! test_codegen {
+    ($name:ident, $input:expr, [$($expected:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            let input = $input;
+            let expected_result = [$($expected),*];
+            let compiler = TestCompiler::new(stringify!($name), input);
+            compiler.stdout(&expected_result);
+        }
+    };
+}
+
 test_codegen!(simple_number, "print 21;", ["21"]);
 test_codegen!(program, "print 5+20-4;", ["21"]);
 test_codegen!(multiplication, "print 5*4;", ["20"]);
@@ -95,16 +107,4 @@ impl Drop for TestCompiler {
         std::fs::remove_file(&self.asm_path).ok();
         std::fs::remove_file(&self.executable_path).ok();
     }
-}
-
-macro_rules! test_codegen {
-    ($name:ident, $input:expr, [$($expected:expr),* $(,)?]) => {
-        #[test]
-        fn $name() {
-            let input = $input;
-            let expected_result = [$($expected),*];
-            let compiler = TestCompiler::new(stringify!($name), input);
-            compiler.stdout(&expected_result);
-        }
-    };
 }
