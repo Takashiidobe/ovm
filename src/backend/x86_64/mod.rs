@@ -107,10 +107,9 @@ impl Backend for Codegen {
                 }
                 Instr::BranchIf(cond, then_label, else_label) => {
                     let reg = resolve(cond);
-                    asm.push(format!("movq {}, %rax", reg));
-                    asm.push("testq %rax, %rax".to_string());
-                    asm.push(format!("jne {}", then_label));
-                    asm.push(format!("jmp {}", else_label));
+                    asm.push(format!("cmpq $0, {reg}"));
+                    asm.push(format!("je {}", else_label));
+                    asm.push(format!("jmp {}", then_label));
                 }
                 Instr::Jump(label) => {
                     if let Some(moves) = self.phi_moves.get(label) {

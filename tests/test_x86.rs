@@ -2,19 +2,47 @@ use std::fs::File;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+test_codegen!(simple_number, "print 21;", ["21"]);
+test_codegen!(program, "print 5+20-4;", ["21"]);
+test_codegen!(multiplication, "print 5*4;", ["20"]);
+test_codegen!(division, "print 20/4;", ["5"]);
+test_codegen!(mixed_operations, "print 2+10*3;", ["32"]);
+test_codegen!(complex_program, "print 20/4*2+3;", ["13"]);
+test_codegen!(parens1, "print (2+3)*4;", ["20"]);
+test_codegen!(parens2, "print 2+(3*4);", ["14"]);
+test_codegen!(nested_parentheses, "print 2*(3+(4-1));", ["12"]);
+test_codegen!(complex_parentheses, "print (10-5)*(2+2)/2;", ["10"]);
+test_codegen!(multiple_statements_simple, "1;2;print 3;", ["3"]);
+test_codegen!(
+    multiple_statements_complex,
+    "(1+2);3;(20*30*(20));print 4;",
+    ["4"]
+);
+test_codegen!(
+    multiple_statements_with_operations,
+    "6/2;20;1;print 1+2;",
+    ["3"]
+);
+test_codegen!(relational_ops, "print 1 < 2; print 1 > 2;", ["1", "0"]);
+test_codegen!(
+    test_conds,
+    "var x = 5; if (x > 10) { print x; } else { print 20; } print x;",
+    ["20", "5"]
+);
+
 struct TestCompiler {
     asm_path: String,
     executable_path: String,
 }
 
 impl TestCompiler {
-    fn new(test_name: &str, expression: &str) -> Self {
+    fn new(test_name: &str, program: &str) -> Self {
         let asm_path = format!("test_{}.S", test_name);
         let executable_path = format!("test_{}_executable", test_name);
 
         // Run the compiler
         let output = Command::new("cargo")
-            .args(["run", "--", expression])
+            .args(["run", "--", program])
             .stdout(Stdio::piped())
             .output()
             .expect("Failed to run compiler");
@@ -45,21 +73,19 @@ impl TestCompiler {
         }
     }
 
-    fn stdout(&self, expected: &str) {
-        // Run the compiled executable and check exit code
+    fn stdout(&self, expected: &[&str]) {
         let output = Command::new(format!("./{}", self.executable_path))
             .output()
             .unwrap()
             .stdout;
 
         let stdout = String::from_utf8_lossy(&output);
-
         let trimmed = stdout.trim();
+        let fixed = expected.join("\n");
 
         assert_eq!(
-            trimmed, expected,
-            "Stdout does not match expected value ({})",
-            expected
+            trimmed, fixed,
+            "Stdout does not match expected value ({fixed})",
         );
     }
 }
@@ -71,133 +97,14 @@ impl Drop for TestCompiler {
     }
 }
 
-#[test]
-fn test_simple_number() {
-    let input = "print 21;";
-    let expected_result = "21";
-    let compiler = TestCompiler::new("simple_number", input);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_expression() {
-    let expression = "print 5+20-4;";
-    let expected_result = "21";
-
-    let compiler = TestCompiler::new("expression", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_multiplication() {
-    let expression = "print 5*4;";
-    let expected_result = "20";
-
-    let compiler = TestCompiler::new("multiplication", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_division() {
-    let expression = "print 20/4;";
-    let expected_result = "5";
-
-    let compiler = TestCompiler::new("division", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_mixed_operations() {
-    let expression = "print 2+10*3;";
-    let expected_result = "32"; // 2+(10*3) = 32 with proper operator precedence
-
-    let compiler = TestCompiler::new("mixed_operations", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_complex_expression() {
-    let expression = "print 20/4*2+3;";
-    let expected_result = "13"; // (20/4)*2+3 = 5*2+3 = 10+3 = 13
-
-    let compiler = TestCompiler::new("complex_expression", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_parentheses_basic() {
-    let expression = "print (2+3)*4;";
-    let expected_result = "20"; // (2+3)*4 = 5*4 = 20 with parentheses
-
-    let compiler = TestCompiler::new("parentheses_basic", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_parentheses_precedence_override() {
-    let expression = "print 2+3*4;";
-    let expected_result = "14"; // 2+3*4 = 2+12 = 14 without parentheses
-
-    let compiler = TestCompiler::new("precedence_without_parens", expression);
-    compiler.stdout(expected_result);
-
-    let expression = "print (2+3)*4;";
-    let expected_result = "20"; // (2+3)*4 = 5*4 = 20 with parentheses
-
-    let compiler = TestCompiler::new("precedence_with_parens", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_nested_parentheses() {
-    let expression = "print 2*(3+(4-1));";
-    let expected_result = "12"; // 2*(3+(4-1)) = 2*(3+3) = 2*6 = 12
-
-    let compiler = TestCompiler::new("nested_parentheses", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_complex_parentheses() {
-    let expression = "print (10-5)*(2+2)/2;";
-    let expected_result = "10"; // (10-5)*(2+2)/2 = 5*4/2 = 20/2 = 10
-
-    let compiler = TestCompiler::new("complex_parentheses", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_multiple_statements_simple() {
-    let expression = "1;2;print 3;";
-    let expected_result = "3"; // Last statement value is returned
-
-    let compiler = TestCompiler::new("multiple_statements_simple", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_multiple_statements_complex() {
-    let expression = "(1+2);3;(20*30*(20));print 4;";
-    let expected_result = "4"; // Last statement value is returned
-
-    let compiler = TestCompiler::new("multiple_statements_complex", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_multiple_statements_with_operations() {
-    let expression = "6/2;20;1;print 1+2;";
-    let expected_result = "3"; // Last statement value is returned
-
-    let compiler = TestCompiler::new("multiple_statements_operations", expression);
-    compiler.stdout(expected_result);
-}
-
-#[test]
-fn test_relational_ops() {
-    let expression = "print 1 < 2; print 1 > 2;";
-    let expected_result = ["1", "0"].join("\n"); // Last statement value is returned
-
-    let compiler = TestCompiler::new("multiple_statements_operations", expression);
-    compiler.stdout(&expected_result);
+macro_rules! test_codegen {
+    ($name:ident, $input:expr, [$($expected:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            let input = $input;
+            let expected_result = [$($expected),*];
+            let compiler = TestCompiler::new(stringify!($name), input);
+            compiler.stdout(&expected_result);
+        }
+    };
 }
