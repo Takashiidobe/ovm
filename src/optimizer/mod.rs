@@ -18,7 +18,7 @@ pub enum Instr {
     BranchIf(String, String, String),
     Jump(String),
     Label(String),
-    Phi(String, String, String),
+    Phi(String, Vec<(String, String)>),
     Assign(String, String),
 }
 
@@ -45,6 +45,60 @@ pub enum Op {
     Or,
 }
 
+#[derive(Default, Debug, PartialEq, Clone)]
+pub struct BasicBlock {
+    pub label: String,
+    pub instrs: Vec<Instr>,
+    pub preds: Vec<String>,
+    pub succs: Vec<String>,
+}
+
+#[derive(Default, Debug, PartialEq, Clone)]
+pub struct CFG {
+    pub blocks: HashMap<String, BasicBlock>,
+    pub current_block: Option<String>,
+}
+
+impl CFG {
+    pub fn start_block(&mut self, label: &str) {
+        self.current_block = Some(label.to_string());
+        self.blocks.insert(
+            label.to_string(),
+            BasicBlock {
+                label: label.to_string(),
+                instrs: vec![Instr::Label("entry".to_string())],
+                preds: vec![],
+                succs: vec![],
+            },
+        );
+    }
+
+    pub fn emit(&mut self, instr: Instr) {
+        if let Some(current_label) = &self.current_block {
+            self.blocks
+                .get_mut(current_label)
+                .unwrap()
+                .instrs
+                .push(instr);
+        } else {
+            panic!("No current block set");
+        }
+    }
+
+    pub fn add_edge(&mut self, from: &str, to: &str) {
+        self.blocks
+            .get_mut(from)
+            .unwrap()
+            .succs
+            .push(to.to_string());
+        self.blocks
+            .get_mut(to)
+            .unwrap()
+            .preds
+            .push(from.to_string());
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct SSA {
     temp_counter: usize,
@@ -52,17 +106,22 @@ pub struct SSA {
     scopes: Vec<HashMap<String, String>>,
     instructions: Vec<Instr>,
     var_versions: HashMap<String, u64>,
+    cfg: CFG,
 }
 
 impl Default for SSA {
     fn default() -> Self {
-        Self {
+        let mut ssa = Self {
             scopes: vec![HashMap::new()],
             temp_counter: Default::default(),
             label_counter: Default::default(),
             instructions: Default::default(),
             var_versions: Default::default(),
-        }
+            cfg: Default::default(),
+        };
+        let entry_label = ssa.new_label("entry");
+        ssa.cfg.start_block(&entry_label);
+        ssa
     }
 }
 
@@ -90,6 +149,14 @@ impl SSA {
             .insert(name.to_string(), var_name.clone());
 
         var_name
+    }
+
+    fn assign_variable(&mut self, name: &str, ssa_temp: &str) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), ssa_temp.to_string());
+        } else {
+            panic!("No active scope to assign variable");
+        }
     }
 
     fn resolve_variable(&self, name: &str) -> Option<&String> {
@@ -125,6 +192,7 @@ impl SSA {
 
     pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
         for stmt in stmts {
+            eprintln!("{:?}", stmt);
             self.stmt_to_ir(stmt);
         }
         self.instructions.clone()
@@ -139,68 +207,82 @@ impl SSA {
                 to_print
             }
             Stmt::While { condition, body } => {
-                let loop_start = self.new_label("loop_start");
+                // The phi node can come from the loop_cond or the loop_body -> loop_end
+                // The loop_cond or loop_body -> loop_body
+                // loop_end should have the merge_label
+
+                // create a new block for the while loop
+                let entry_block = self.cfg.current_block.as_ref().unwrap().clone();
+
+                let loop_cond = self.new_label("loop_cond");
                 let loop_body = self.new_label("loop_body");
                 let loop_end = self.new_label("loop_end");
 
-                // Step 1: Capture outer scope before loop
-                let outer_scope = self.scopes.last().cloned().unwrap_or_default();
+                // --- Step 2: Create all blocks first ---
+                self.cfg.start_block(&loop_cond);
+                self.cfg.start_block(&loop_body);
+                self.cfg.start_block(&loop_end);
 
-                // Step 2: Emit loop header
-                self.emit(Instr::Label(loop_start.clone()));
+                eprintln!("Current block before loop: {}", entry_block);
 
-                // Step 3: Create Phi nodes for loop-carried variables
-                let mut phi_vars = HashMap::new(); // var_name -> phi_name
-                for (var, outer_val) in &outer_scope {
-                    let phi_temp = self.new_temp();
-                    self.emit(Instr::Phi(
-                        phi_temp.clone(),
-                        outer_val.clone(),
-                        outer_val.clone(),
-                    ));
-                    self.define_variable(var);
-                    phi_vars.insert(var.clone(), phi_temp);
-                }
+                // Emit: Jump from entry to loop_cond
+                self.emit(Instr::Jump(loop_cond.clone()));
 
-                // Step 4: Emit condition check
+                // Add edge from entry to loop_cond
+                self.cfg.add_edge(&entry_block, &loop_cond);
+
+                // --- Step 3: loop_cond block ---
+                self.cfg.current_block = Some(loop_cond.clone());
+                self.emit(Instr::Label(loop_cond.clone()));
+
+                // Snapshot pre-loop scope
+                let pre_loop_scope = self.scopes.last().cloned().unwrap_or_default();
+
+                // Evaluate condition
                 let cond_temp = self.expr_to_ir(condition);
                 self.emit(Instr::BranchIf(
                     cond_temp.clone(),
                     loop_body.clone(),
                     loop_end.clone(),
                 ));
+                self.cfg.add_edge(&loop_cond, &loop_body);
+                self.cfg.add_edge(&loop_cond, &loop_end);
 
-                // Step 5: Loop body
+                // --- Step 4: loop_body block ---
+                self.cfg.current_block = Some(loop_body.clone());
                 self.emit(Instr::Label(loop_body.clone()));
 
-                let updated_vars = self.with_scope(|ssa| {
-                    ssa.stmt_to_ir(body);
-                    ssa.scopes.last().cloned().unwrap_or_default()
-                });
+                self.enter_scope(); // manually push
 
-                // Step 6: Update Phi backedges (only if values changed)
-                for (var, phi_name) in &phi_vars {
-                    if let Some(updated_val) = updated_vars.get(var) {
-                        self.emit(Instr::Phi(
-                            phi_name.clone(),
-                            outer_scope.get(var).unwrap().clone(),
-                            updated_val.clone(),
-                        ));
-                        self.define_variable(var); // Rebind phi result for next iterations
-                    }
-                }
+                self.stmt_to_ir(body);
 
-                // Step 7: Loop back
-                self.emit(Instr::Jump(loop_start.clone()));
+                let post_loop_scope = self.scopes.last().cloned().unwrap_or_default();
 
-                // Step 8: Exit loop
+                self.exit_scope(); // manually pop
+
+                // Jump back to loop_cond
+                self.emit(Instr::Jump(loop_cond.clone()));
+                self.cfg.add_edge(&loop_body, &loop_cond);
+
+                eprintln!("\n[PHI DEBUG]");
+                eprintln!("Loop entry block:      {}", entry_block);
+                eprintln!("Loop body block:       {}", loop_body);
+                eprintln!("Loop condition label:  {}", loop_cond);
+                eprintln!(
+                    "CFG preds of loop_cond: {:?}",
+                    self.cfg.blocks[&loop_cond].preds
+                );
+                eprintln!("post_loop_scope = {:?}", post_loop_scope);
+                eprintln!("pre_loop_scope = {:?}", pre_loop_scope);
+
+                // --- Step 5: Phi node insertion ---
+                self.insert_phi_nodes(&loop_cond, &pre_loop_scope, &post_loop_scope);
+
+                // --- Step 6: loop_end block ---
+                self.cfg.current_block = Some(loop_end.clone());
                 self.emit(Instr::Label(loop_end.clone()));
 
-                // Step 9: Dummy result (loops don't produce a meaningful value)
-                let result = self.new_temp();
-                self.emit(Instr::Const(result.clone(), 0));
-
-                result
+                self.new_temp()
             }
             Stmt::If {
                 condition,
@@ -263,8 +345,10 @@ impl SSA {
                 let if_result = self.new_temp();
                 self.emit(Instr::Phi(
                     if_result.clone(),
-                    then_result.clone(),
-                    else_result.clone(),
+                    vec![
+                        (then_label.clone(), then_result.clone()),
+                        (else_label.clone(), else_result.clone()),
+                    ],
                 ));
 
                 let outer_scope = self
@@ -294,26 +378,38 @@ impl SSA {
                         // Case 1: Variable modified in both branches with different values
                         (Some(t1), Some(t2)) if t1 != t2 => {
                             let phi = self.new_temp();
-                            self.emit(Instr::Phi(phi.clone(), t1.clone(), t2.clone()));
+
+                            self.emit(Instr::Phi(
+                                phi.clone(),
+                                vec![
+                                    (then_label.clone(), t1.clone()),
+                                    (else_label.clone(), t2.clone()),
+                                ],
+                            ));
                             self.define_variable(var);
                         }
-                        // Case 2: Variable modified in only one branch
+
+                        // Case 2: Variable modified in only the 'then' branch
                         (Some(t), None) => {
-                            // We need a phi node that uses the outer scope value for the
-                            // branch where it wasn't modified
                             let outer_val = outer_scope.get(var).cloned().unwrap_or_else(|| {
-                                // If not in outer scope, create a dummy value
                                 let dummy = self.new_temp();
                                 self.emit(Instr::Const(dummy.clone(), 0));
                                 dummy
                             });
 
                             let phi = self.new_temp();
-                            self.emit(Instr::Phi(phi.clone(), t.clone(), outer_val));
+                            self.emit(Instr::Phi(
+                                phi.clone(),
+                                vec![
+                                    (then_label.clone(), t.clone()),
+                                    (else_label.clone(), outer_val),
+                                ],
+                            ));
                             self.define_variable(var);
                         }
+
+                        // Case 2 (variant): Variable modified only in the 'else' branch
                         (None, Some(t)) => {
-                            // Similar to above but for else branch
                             let outer_val = outer_scope.get(var).cloned().unwrap_or_else(|| {
                                 let dummy = self.new_temp();
                                 self.emit(Instr::Const(dummy.clone(), 0));
@@ -321,10 +417,17 @@ impl SSA {
                             });
 
                             let phi = self.new_temp();
-                            self.emit(Instr::Phi(phi.clone(), outer_val, t.clone()));
+                            self.emit(Instr::Phi(
+                                phi.clone(),
+                                vec![
+                                    (then_label.clone(), outer_val),
+                                    (else_label.clone(), t.clone()),
+                                ],
+                            ));
                             self.define_variable(var);
                         }
-                        // Case 3: Variable not modified in either branch, use outer scope
+
+                        // Case 3: Variable not modified in either branch
                         (None, None) => {
                             if outer_scope.contains_key(var) {
                                 // Just bring the outer scope value into current scope
@@ -332,22 +435,22 @@ impl SSA {
                             }
                             // Do nothing if not in any scope
                         }
+
                         // Case 4: Modified in both branches with same value
                         (Some(t1), Some(t2)) if t1 == t2 => {
-                            // No phi needed, just use the same value
+                            // No phi needed, just reuse same value
                             self.define_variable(var);
                         }
+
                         _ => unreachable!(),
                     }
                 }
                 if_result
             }
             Stmt::Block { statements } => {
-                self.with_scope(|ssa| {
-                    for stmt in statements {
-                        ssa.stmt_to_ir(stmt);
-                    }
-                });
+                for stmt in statements {
+                    self.stmt_to_ir(stmt);
+                }
                 String::default()
             }
             Stmt::Var { name, initializer } => {
@@ -442,6 +545,8 @@ impl SSA {
 
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
 
+                self.assign_variable(&var_name, &ssa_name);
+
                 ssa_name
             }
             Expr::Variable { name } => match self.resolve_variable(&name.lexeme) {
@@ -454,5 +559,42 @@ impl SSA {
 
     fn emit(&mut self, instr: Instr) {
         self.instructions.push(instr);
+    }
+
+    fn insert_phi_nodes(
+        &mut self,
+        join_label: &str,
+        pre_scope: &HashMap<String, String>,
+        post_scope: &HashMap<String, String>,
+    ) {
+        let preds = &self.cfg.blocks[join_label].preds.clone();
+        assert_eq!(preds.len(), 2, "Expected exactly two predecessors for join");
+
+        let pred1 = &preds[0]; // entry (e.g., before loop)
+        let pred2 = &preds[1]; // loop back (e.g., from loop body)
+
+        dbg!(&preds);
+
+        for (var, pre_val) in pre_scope.iter() {
+            eprintln!("Checking var `{}`", var);
+            if let Some(post_val) = post_scope.get(var) {
+                eprintln!("  pre = {}, post = {}", pre_val, post_val);
+                if pre_val != post_val {
+                    eprintln!("  --> inserting Phi for `{}`", var);
+                    self.emit(Instr::Phi(
+                        var.clone(),
+                        vec![
+                            (pred1.clone(), pre_val.clone()),
+                            (pred2.clone(), post_val.clone()),
+                        ],
+                    ));
+                    self.assign_variable(var, var);
+                } else {
+                    eprintln!("  values match — no Phi needed");
+                }
+            } else {
+                eprintln!("  post_scope has no value for `{}`", var);
+            }
+        }
     }
 }

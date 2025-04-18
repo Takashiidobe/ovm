@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use crate::optimizer::{Instr, Op, CmpOp};
+use crate::optimizer::{CmpOp, Instr, Op};
 
 use super::pass::Pass;
 
 /// Constant folding optimization pass
-/// 
+///
 /// This pass replaces operations on constants with their computed results.
 pub struct ConstantFolding;
 
@@ -66,25 +66,33 @@ impl Pass for ConstantFolding {
                         }
                     }
                 }
-                Instr::Phi(dest, left, right) => {
-                    let lval = constants.get(&left);
-                    let rval = constants.get(&right);
-                    match (lval, rval) {
-                        // If both values are constant and identical, we can replace with a constant
-                        (Some(&lv), Some(&rv)) if lv == rv => {
-                            constants.insert(dest.clone(), lv);
-                            new_instrs.push(Instr::Const(dest, lv));
-                        }
-                        // If both are constants but different, we need to keep the phi since it depends on control flow
-                        (Some(_), Some(_)) => {
+                Instr::Phi(dest, preds) => {
+                    // Collect constant values for each predecessor (if available)
+                    let pred_constants: Vec<Option<i64>> = preds
+                        .iter()
+                        .map(|(_, pred_val)| constants.get(pred_val).copied())
+                        .collect();
+
+                    if pred_constants.iter().all(|val| val.is_some()) {
+                        // If all predecessor values are constants:
+                        let first_const = pred_constants[0].unwrap();
+
+                        if pred_constants
+                            .iter()
+                            .all(|&val| val.unwrap() == first_const)
+                        {
+                            // All constants identical; fold into a single constant
+                            constants.insert(dest.clone(), first_const);
+                            new_instrs.push(Instr::Const(dest.clone(), first_const));
+                        } else {
+                            // Different constants; can't fold, keep the phi
                             constants.remove(&dest);
-                            new_instrs.push(Instr::Phi(dest, left, right));
+                            new_instrs.push(Instr::Phi(dest.clone(), preds.clone()));
                         }
-                        // If either branch is not a constant, we can't fold
-                        _ => {
-                            constants.remove(&dest);
-                            new_instrs.push(Instr::Phi(dest, left, right));
-                        }
+                    } else {
+                        // At least one predecessor is non-constant; can't fold
+                        constants.remove(&dest);
+                        new_instrs.push(Instr::Phi(dest.clone(), preds.clone()));
                     }
                 }
                 Instr::Print(name) => {
@@ -100,8 +108,7 @@ impl Pass for ConstantFolding {
     fn name(&self) -> &'static str {
         "ConstantFolding"
     }
-} 
-
+}
 
 #[cfg(test)]
 mod tests {
@@ -135,3 +142,4 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 }
+

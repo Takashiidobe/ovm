@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::optimizer::Instr;
 
@@ -45,13 +45,14 @@ impl RegisterAllocator for LinearScan {
                     all_vars.insert(var.clone());
                     root_vars.insert(var.to_string());
                 }
-                Instr::Phi(dest, left, right) => {
+                Instr::Phi(dest, preds) => {
                     all_vars.insert(dest.clone());
-                    all_vars.insert(left.clone());
-                    all_vars.insert(right.clone());
-                    root_vars.insert(dest.to_string());
-                    root_vars.insert(left.to_string());
-                    root_vars.insert(right.to_string());
+                    root_vars.insert(dest.clone());
+
+                    for (_, pred_val) in preds.iter() {
+                        all_vars.insert(pred_val.clone());
+                        root_vars.insert(pred_val.clone());
+                    }
                 }
                 Instr::Assign(dest, src) => {
                     all_vars.insert(dest.clone());
@@ -69,7 +70,7 @@ impl RegisterAllocator for LinearScan {
 
         // Assign same register to all variables with same root name
         let mut reg_idx = 0;
-        let mut register_map = HashMap::new();
+        let mut register_map = BTreeMap::new();
 
         for root in sorted_roots {
             if !register_map.contains_key(&root) && reg_idx < AVAILABLE_REGS.len() {

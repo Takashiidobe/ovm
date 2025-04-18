@@ -8,6 +8,7 @@ use super::Backend;
 pub struct Codegen {
     phi_moves: BTreeMap<String, Vec<(String, String)>>,
     asm: Vec<String>,
+    current_block: Option<String>,
 }
 
 impl Backend for Codegen {
@@ -16,6 +17,18 @@ impl Backend for Codegen {
         instrs: &[Instr],
         locations: &HashMap<String, Location>,
     ) -> String {
+        // set up phi nodes
+        for instr in instrs {
+            if let Instr::Phi(dest, incoming) = instr {
+                for (pred_label, src_val) in incoming {
+                    self.phi_moves
+                        .entry(pred_label.clone())
+                        .or_default()
+                        .push((src_val.clone(), dest.clone()));
+                }
+            }
+        }
+
         // .data
         self.add(".section .data");
         self.add("fmt: .string \"%ld\\n\"");
@@ -105,50 +118,48 @@ impl Backend for Codegen {
                 }
                 Instr::BranchIf(cond, then_label, else_label) => {
                     let reg = resolve(cond);
-                    self.add(format!("cmpq $0, {reg}"));
-                    self.add(format!("je {}", else_label));
-                    self.add(format!("jmp {}", then_label));
-                }
-                Instr::Jump(label) => {
-                    if let Some(moves) = self.phi_moves.get(label) {
+                    self.add(format!("cmpq $0, {}", reg));
+
+                    let current = self.current_block.as_ref().expect("no current block");
+
+                    // Emit Phi moves before branching
+                    if let Some(moves) = self.phi_moves.get(current) {
                         for (src, dest) in moves.clone() {
                             self.move_memory(&resolve(&src), &resolve(&dest));
                         }
                     }
-                    self.add(format!("jmp {}", label));
-                }
-                Instr::Label(label) => {
-                    self.add(format!("{}:", label));
-                }
-                Instr::Phi(dest, from_then, from_else) => {
-                    // Find corresponding branch labels by scanning previous instructions
-                    let mut then_label: Option<&str> = None;
-                    let mut else_label: Option<&str> = None;
 
-                    // Look for the most recent BranchIf to find labels
-                    for instr in instrs.iter().rev() {
-                        if let Instr::BranchIf(_, t_label, e_label) = instr {
-                            then_label = Some(t_label);
-                            else_label = Some(e_label);
-                            break;
+                    self.add(format!("je {}", else_label));
+                    self.add(format!("jmp {}", then_label));
+                }
+                Instr::Jump(label) => {
+                    eprintln!("Emitting jump to {label}");
+                    let current = self.current_block.as_ref().expect("no current block");
+
+                    // before jumping to a label, we want to see all the variables in the current
+                    // block. If they
+                    if let Some(moves) = self.phi_moves.get(current) {
+                        eprintln!("Phi moves from {current} to {label}: {:?}", moves);
+                        for (src, dest) in moves.clone() {
+                            self.move_memory(&resolve(&src), &resolve(&dest));
                         }
                     }
 
-                    if let (Some(t_label), Some(e_label)) = (then_label, else_label) {
+                    self.add(format!("jmp {}", label));
+                }
+                Instr::Label(label) => {
+                    self.current_block = Some(label.clone());
+                    self.add(format!("{}:", label));
+                }
+                // This handles Phi nodes from BranchIf properly, but not from while loops.
+                // Before lowering to SSA form, I need a proper CFG.
+                Instr::Phi(dest, preds) => {
+                    for (pred, val) in preds {
+                        eprintln!("Phi: in {pred}, move {val} -> {dest}");
                         self.phi_moves
-                            .entry(t_label.to_string())
+                            .entry(pred.clone())
                             .or_default()
-                            .push((from_then.clone(), dest.clone()));
-
-                        self.phi_moves
-                            .entry(e_label.to_string())
-                            .or_default()
-                            .push((from_else.clone(), dest.clone()));
-                    } else {
-                        panic!(
-                            "Could not find branch labels for phi nodes {:?}, {:?}",
-                            then_label, else_label
-                        );
+                            .push((val.clone(), dest.clone()));
                     }
                 }
                 Instr::Assign(dest, src) => {

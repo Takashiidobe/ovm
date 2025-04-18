@@ -68,10 +68,11 @@ impl Pass for DeadCodeElimination {
                         optimized.push(instr.clone());
                     }
                 }
-                Instr::Phi(dest, left, right) => {
+                Instr::Phi(dest, preds) => {
                     if used.contains(dest) {
-                        used.insert(left.clone());
-                        used.insert(right.clone());
+                        for (_, pred_val) in preds.iter() {
+                            used.insert(pred_val.clone());
+                        }
                         optimized.push(instr.clone());
                     }
                 }
@@ -96,7 +97,7 @@ impl Pass for DeadCodeElimination {
     fn name(&self) -> &'static str {
         "DeadCodeElimination"
     }
-} 
+}
 
 #[cfg(test)]
 mod tests {
