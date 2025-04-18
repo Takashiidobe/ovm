@@ -1,0 +1,11 @@
+---
+source: tests/test_programs.rs
+expression: test_output
+input_file: tests/programs/while.ovm
+---
+status: 0
+stdout:
+  - "5"
+  - "6"
+  - "7"
+stderr: []

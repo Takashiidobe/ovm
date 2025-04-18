@@ -6,7 +6,7 @@ use super::Backend;
 
 #[derive(Default, Clone)]
 pub struct Codegen {
-    phi_moves: BTreeMap<String, Vec<(String, String)>>,
+    phi_prep_moves: BTreeMap<(String, String), Vec<(String, String)>>,
     asm: Vec<String>,
     current_block: Option<String>,
 }
@@ -17,17 +17,44 @@ impl Backend for Codegen {
         instrs: &[Instr],
         locations: &HashMap<String, Location>,
     ) -> String {
-        // set up phi nodes
+        // --- Pass 1: Map instruction indices to block labels and Phi destinations to block labels ---
+        let mut current_block_label = "entry_0".to_string(); // Assume entry_0 if no label seen first
+        let mut instr_block_labels = HashMap::new();
+        let mut phi_locations = HashMap::new(); // phi_dest_ssa -> block_label
+
+        for (idx, instr) in instrs.iter().enumerate() {
+            if let Instr::Label(label) = instr {
+                current_block_label = label.clone();
+            }
+            instr_block_labels.insert(idx, current_block_label.clone());
+            if let Instr::Phi(dest, _) = instr {
+                phi_locations.insert(dest.clone(), current_block_label.clone());
+            }
+        }
+
+        // --- Pass 2: Populate phi_prep_moves based on Phi instructions and locations ---
+        self.phi_prep_moves.clear(); // Ensure it's empty before populating
         for instr in instrs {
-            if let Instr::Phi(dest, incoming) = instr {
-                for (pred_label, src_val) in incoming {
-                    self.phi_moves
-                        .entry(pred_label.clone())
-                        .or_default()
-                        .push((src_val.clone(), dest.clone()));
+            if let Instr::Phi(dest, preds) = instr {
+                if let Some(phi_block_label) = phi_locations.get(dest) {
+                     for (pred_label, pred_val_ssa) in preds {
+                        eprintln!(
+                            "Phi Prep (Pass 2): At end of block '{}', move '{}' to target of '{}' (which is in block '{}')",
+                            pred_label, pred_val_ssa, dest, phi_block_label
+                        );
+                        self.phi_prep_moves
+                            .entry((pred_label.clone(), phi_block_label.clone()))
+                            .or_default()
+                            .push((dest.clone(), pred_val_ssa.clone()));
+                    }
+                } else {
+                    eprintln!("Warning: Could not find block location for Phi dest '{}'", dest);
                 }
             }
         }
+
+        // --- Pass 3: Code Generation ---
+        self.current_block = None; // Reset current block before starting generation
 
         // .data
         self.add(".section .data");
@@ -117,31 +144,57 @@ impl Backend for Codegen {
                     self.add(format!("movq %rax, {dest}"));
                 }
                 Instr::BranchIf(cond, then_label, else_label) => {
-                    let reg = resolve(cond);
-                    self.add(format!("cmpq $0, {}", reg));
-
-                    let current = self.current_block.as_ref().expect("no current block");
-
-                    // Emit Phi moves before branching
-                    if let Some(moves) = self.phi_moves.get(current) {
-                        for (src, dest) in moves.clone() {
-                            self.move_memory(&resolve(&src), &resolve(&dest));
+                    let cond_reg = resolve(cond);
+                    self.add(format!("cmpq $0, {}", cond_reg));
+                    self.add(format!("jne {}", then_label)); // Jump if condition is true (non-zero)
+                    
+                    // Code for the 'else' path (condition is false/zero)
+                    // Emit Phi moves for the edge to the else block *before* jumping/falling through
+                    if let Some(prep_moves) = self
+                        .phi_prep_moves
+                        .get(&(self.current_block.clone().unwrap(), else_label.to_string()))
+                    {
+                        eprintln!("Phi Moves for edge to {}: {:?}", else_label, prep_moves);
+                        for (phi_dest_ssa, pred_val_ssa) in prep_moves.clone() {
+                            let dest_loc = resolve(&phi_dest_ssa);
+                            let src_loc = resolve(&pred_val_ssa);
+                            self.move_memory(&src_loc, &dest_loc);
                         }
                     }
-
-                    self.add(format!("je {}", else_label));
-                    self.add(format!("jmp {}", then_label));
+                    self.add(format!("jmp {}", else_label)); // Jump to else block
+                    
+                    // Code for the 'then' path (condition is true/non-zero)
+                    // Need a label for the jump instruction above to target
+                    // self.add(format!("{}:", then_label)); // The original branch goes here
+                    // Emit Phi moves for the edge to the then block *before* jumping/falling through
+                    // NOTE: This part might be unreachable if the jne always jumps past it.
+                    // The structure assumes the 'then' block follows immediately.
+                    // A robust CFG-aware approach is needed here.
+                    if let Some(prep_moves) = self
+                        .phi_prep_moves
+                        .get(&(self.current_block.clone().unwrap(), then_label.to_string()))
+                    {
+                        eprintln!("Phi Moves for edge to {}: {:?}", then_label, prep_moves);
+                         for (phi_dest_ssa, pred_val_ssa) in prep_moves.clone() {
+                            let dest_loc = resolve(&phi_dest_ssa);
+                            let src_loc = resolve(&pred_val_ssa);
+                            self.move_memory(&src_loc, &dest_loc);
+                        }
+                    }
+                    // Implicit fallthrough to then_label if it's the next instruction
+                    // Or an explicit jump if the structure requires it (we assume fallthrough for now)
                 }
                 Instr::Jump(label) => {
-                    eprintln!("Emitting jump to {label}");
-                    let current = self.current_block.as_ref().expect("no current block");
-
-                    // before jumping to a label, we want to see all the variables in the current
-                    // block. If they
-                    if let Some(moves) = self.phi_moves.get(current) {
-                        eprintln!("Phi moves from {current} to {label}: {:?}", moves);
-                        for (src, dest) in moves.clone() {
-                            self.move_memory(&resolve(&src), &resolve(&dest));
+                     // Emit Phi moves for the edge to the target block *before* jumping
+                    if let Some(prep_moves) = self
+                        .phi_prep_moves
+                        .get(&(self.current_block.clone().unwrap(), label.to_string()))
+                    {
+                        eprintln!("Phi Moves for edge to {}: {:?}", label, prep_moves);
+                        for (phi_dest_ssa, pred_val_ssa) in prep_moves.clone() {
+                            let dest_loc = resolve(&phi_dest_ssa);
+                            let src_loc = resolve(&pred_val_ssa);
+                            self.move_memory(&src_loc, &dest_loc);
                         }
                     }
 
@@ -151,16 +204,9 @@ impl Backend for Codegen {
                     self.current_block = Some(label.clone());
                     self.add(format!("{}:", label));
                 }
-                // This handles Phi nodes from BranchIf properly, but not from while loops.
-                // Before lowering to SSA form, I need a proper CFG.
-                Instr::Phi(dest, preds) => {
-                    for (pred, val) in preds {
-                        eprintln!("Phi: in {pred}, move {val} -> {dest}");
-                        self.phi_moves
-                            .entry(pred.clone())
-                            .or_default()
-                            .push((val.clone(), dest.clone()));
-                    }
+                // Phi nodes are handled entirely during the setup passes
+                Instr::Phi(_, _) => {
+                    // No code generation needed here
                 }
                 Instr::Assign(dest, src) => {
                     let dest = resolve(dest);

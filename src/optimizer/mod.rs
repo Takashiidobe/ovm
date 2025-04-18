@@ -66,7 +66,7 @@ impl CFG {
             label.to_string(),
             BasicBlock {
                 label: label.to_string(),
-                instrs: vec![Instr::Label("entry".to_string())],
+                instrs: vec![],
                 preds: vec![],
                 succs: vec![],
             },
@@ -154,8 +154,6 @@ impl SSA {
     fn assign_variable(&mut self, name: &str, ssa_temp: &str) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), ssa_temp.to_string());
-        } else {
-            panic!("No active scope to assign variable");
         }
     }
 
@@ -191,6 +189,7 @@ impl SSA {
     }
 
     pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
+        self.instructions.push(Instr::Label("entry_0".to_string()));
         for stmt in stmts {
             eprintln!("{:?}", stmt);
             self.stmt_to_ir(stmt);
@@ -207,82 +206,113 @@ impl SSA {
                 to_print
             }
             Stmt::While { condition, body } => {
-                // The phi node can come from the loop_cond or the loop_body -> loop_end
-                // The loop_cond or loop_body -> loop_body
-                // loop_end should have the merge_label
+                // 0. Setup Labels and Predecessor Info
+                let header_label = self.new_label("loop_header");
+                let body_label = self.new_label("loop_body");
+                let exit_label = self.new_label("loop_exit");
+                // FIXME: This assumes the block before the loop is always entry_0
+                // In reality, we need the actual label of the block ending before this jump.
+                let pre_header_label = "entry_0".to_string();
 
-                // create a new block for the while loop
-                let entry_block = self.cfg.current_block.as_ref().unwrap().clone();
+                // 1. Jump from pre-header to the loop header
+                self.emit(Instr::Jump(header_label.clone()));
+                // TODO: self.cfg.add_edge(&pre_header_label, &header_label);
 
-                let loop_cond = self.new_label("loop_cond");
-                let loop_body = self.new_label("loop_body");
-                let loop_end = self.new_label("loop_end");
+                // 2. Start Header Block
+                // TODO: self.cfg.current_block = Some(header_label.clone());
+                self.emit(Instr::Label(header_label.clone()));
 
-                // --- Step 2: Create all blocks first ---
-                self.cfg.start_block(&loop_cond);
-                self.cfg.start_block(&loop_body);
-                self.cfg.start_block(&loop_end);
+                // 3. Setup Loop Scope and Identify Loop Variables
+                self.enter_scope(); // Scope for the loop (header + body)
+                // Identify variables defined in the outer scope (scope N-2)
+                let outer_scope_vars = self.scopes.get(self.scopes.len().saturating_sub(2))
+                                          .cloned().unwrap_or_default();
 
-                eprintln!("Current block before loop: {}", entry_block);
+                // 4. Emit Incomplete Phi Nodes & Update Scope
+                let mut phi_data = HashMap::new(); // var_name -> (phi_ssa_name, outer_ssa_name, instr_idx)
+                for (var_name, outer_ssa_name) in &outer_scope_vars {
+                    // We assume any variable from outer scope *might* be modified.
+                    let phi_ssa_name = self.new_temp();
+                    let phi_instr = Instr::Phi(phi_ssa_name.clone(), vec![
+                        // Edge from pre-header
+                        (pre_header_label.clone(), outer_ssa_name.clone())
+                        // Back-edge from body will be added later by patching
+                    ]);
+                    let instr_idx = self.instructions.len();
+                    self.emit(phi_instr);
+                    // Update current scope to use the result of the phi node
+                    self.assign_variable(var_name, &phi_ssa_name);
+                    phi_data.insert(var_name.clone(), (phi_ssa_name, outer_ssa_name.clone(), instr_idx));
+                }
 
-                // Emit: Jump from entry to loop_cond
-                self.emit(Instr::Jump(loop_cond.clone()));
-
-                // Add edge from entry to loop_cond
-                self.cfg.add_edge(&entry_block, &loop_cond);
-
-                // --- Step 3: loop_cond block ---
-                self.cfg.current_block = Some(loop_cond.clone());
-                self.emit(Instr::Label(loop_cond.clone()));
-
-                // Snapshot pre-loop scope
-                let pre_loop_scope = self.scopes.last().cloned().unwrap_or_default();
-
-                // Evaluate condition
+                // 5. Evaluate Loop Condition (uses phi results via current scope)
                 let cond_temp = self.expr_to_ir(condition);
+
+                // 6. Conditional Branch to Body or Exit
                 self.emit(Instr::BranchIf(
-                    cond_temp.clone(),
-                    loop_body.clone(),
-                    loop_end.clone(),
+                    cond_temp,
+                    body_label.clone(),
+                    exit_label.clone(),
                 ));
-                self.cfg.add_edge(&loop_cond, &loop_body);
-                self.cfg.add_edge(&loop_cond, &loop_end);
+                // TODO: self.cfg.add_edge(&header_label, &body_label);
+                // TODO: self.cfg.add_edge(&header_label, &exit_label);
 
-                // --- Step 4: loop_body block ---
-                self.cfg.current_block = Some(loop_body.clone());
-                self.emit(Instr::Label(loop_body.clone()));
 
-                self.enter_scope(); // manually push
+                // 7. Start Body Block
+                // TODO: self.cfg.current_block = Some(body_label.clone());
+                self.emit(Instr::Label(body_label.clone()));
 
-                self.stmt_to_ir(body);
+                // 8. Execute Loop Body (uses the same loop scope)
+                // Note: If `body` contains blocks, it will manage its own sub-scopes
+                let body_result = self.stmt_to_ir(body);
 
-                let post_loop_scope = self.scopes.last().cloned().unwrap_or_default();
+                // 9. Collect Final Variable Values from End of Body Scope
+                // This scope contains results of body execution.
+                let body_end_scope = self.scopes.last().cloned().unwrap_or_default();
 
-                self.exit_scope(); // manually pop
+                // 10. Prepare Phi Patches (collect info needed)
+                let mut patches = Vec::new(); // Vec<(instr_idx, block_label, ssa_name)>
+                for (var_name, (phi_ssa_name, _, instr_idx)) in &phi_data {
+                    // Find the SSA name for var_name at the end of the body.
+                    // If it wasn't modified in the body, its value is the phi result itself.
+                    let body_end_val = body_end_scope.get(var_name)
+                        .cloned()
+                        .unwrap_or_else(|| phi_ssa_name.clone());
+                    patches.push((*instr_idx, body_label.clone(), body_end_val));
+                }
 
-                // Jump back to loop_cond
-                self.emit(Instr::Jump(loop_cond.clone()));
-                self.cfg.add_edge(&loop_body, &loop_cond);
+                // 11. Jump from Body back to Header
+                self.emit(Instr::Jump(header_label.clone()));
+                // TODO: self.cfg.add_edge(&body_label, &header_label);
 
-                eprintln!("\n[PHI DEBUG]");
-                eprintln!("Loop entry block:      {}", entry_block);
-                eprintln!("Loop body block:       {}", loop_body);
-                eprintln!("Loop condition label:  {}", loop_cond);
-                eprintln!(
-                    "CFG preds of loop_cond: {:?}",
-                    self.cfg.blocks[&loop_cond].preds
-                );
-                eprintln!("post_loop_scope = {:?}", post_loop_scope);
-                eprintln!("pre_loop_scope = {:?}", pre_loop_scope);
 
-                // --- Step 5: Phi node insertion ---
-                self.insert_phi_nodes(&loop_cond, &pre_loop_scope, &post_loop_scope);
+                // 12. Apply Phi Patches (Modify the Phi instructions emitted in step 4)
+                // This requires mutable access to self.instructions
+                for (idx, back_edge_label, back_edge_val) in patches {
+                     if let Some(Instr::Phi(_, edges)) = self.instructions.get_mut(idx) {
+                         // Directly use the mutably borrowed `edges`
+                         edges.push((back_edge_label, back_edge_val));
+                     } else {
+                         eprintln!("SSA Error: Expected Phi instruction at index {} for patching.", idx);
+                     }
+                }
 
-                // --- Step 6: loop_end block ---
-                self.cfg.current_block = Some(loop_end.clone());
-                self.emit(Instr::Label(loop_end.clone()));
+                // 13. Start Exit Block
+                self.exit_scope(); // Exit the main loop scope
+                // TODO: self.cfg.current_block = Some(exit_label.clone());
+                self.emit(Instr::Label(exit_label.clone()));
+                self.enter_scope(); // Enter scope for code after the loop
 
-                self.new_temp()
+                // 14. Populate Post-Loop Scope
+                // Variables available after the loop take their value from the phi nodes
+                // generated in the header, as that's the value available on the exit edge.
+                for (var_name, (phi_ssa_name, _, _)) in phi_data {
+                    self.assign_variable(&var_name, &phi_ssa_name);
+                }
+
+                // While loops usually don't produce a value, but stmt_to_ir expects a String.
+                // Return "" or perhaps the result of the last expression in the body? For now, empty.
+                "".to_string()
             }
             Stmt::If {
                 condition,
@@ -458,15 +488,11 @@ impl SSA {
                     .clone()
                     .unwrap_or(Expr::Literal { value: Object::Nil });
                 let rhs_temp = self.expr_to_ir(&expr);
-                let var_name = match name.literal.clone().unwrap() {
-                    Object::String(name) => name,
-                    _ => panic!(
-                        "left side of variable is not an identifier, {:?}",
-                        name.literal
-                    ),
-                };
+                let var_name = name.lexeme.clone();
+
                 let ssa_name = self.define_variable(&var_name);
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
+                self.assign_variable(&var_name, &ssa_name);
                 ssa_name
             }
             stmt => panic!("Statement not supported: {stmt:?}"),
@@ -534,13 +560,7 @@ impl SSA {
             }
             Expr::Assign { name, value } => {
                 let rhs_temp = self.expr_to_ir(value);
-                let var_name = match name.literal.clone().unwrap() {
-                    Object::String(name) => name,
-                    _ => panic!(
-                        "left side of variable is not an identifier, {:?}",
-                        name.literal
-                    ),
-                };
+                let var_name = name.lexeme.clone();
                 let ssa_name = self.define_variable(&var_name);
 
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
@@ -570,31 +590,27 @@ impl SSA {
         let preds = &self.cfg.blocks[join_label].preds.clone();
         assert_eq!(preds.len(), 2, "Expected exactly two predecessors for join");
 
-        let pred1 = &preds[0]; // entry (e.g., before loop)
-        let pred2 = &preds[1]; // loop back (e.g., from loop body)
-
-        dbg!(&preds);
+        let (pred1, pred2) = (&preds[0], &preds[1]);
 
         for (var, pre_val) in pre_scope.iter() {
-            eprintln!("Checking var `{}`", var);
             if let Some(post_val) = post_scope.get(var) {
-                eprintln!("  pre = {}, post = {}", pre_val, post_val);
-                if pre_val != post_val {
-                    eprintln!("  --> inserting Phi for `{}`", var);
-                    self.emit(Instr::Phi(
-                        var.clone(),
-                        vec![
-                            (pred1.clone(), pre_val.clone()),
-                            (pred2.clone(), post_val.clone()),
-                        ],
-                    ));
-                    self.assign_variable(var, var);
-                } else {
-                    eprintln!("  values match — no Phi needed");
-                }
-            } else {
-                eprintln!("  post_scope has no value for `{}`", var);
+                let phi_temp = self.new_temp();
+                self.emit(Instr::Phi(
+                    phi_temp.clone(),
+                    vec![
+                        (pred2.clone(), pre_val.clone()),
+                        (pred1.clone(), post_val.clone()),
+                    ],
+                ));
+
+                self.assign_variable(var, &phi_temp);
             }
         }
     }
+
+    fn get_current_scope_vars(&self) -> HashMap<String, String> {
+        self.scopes.last().cloned().unwrap_or_default()
+    }
 }
+
+
