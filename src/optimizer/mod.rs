@@ -22,7 +22,7 @@ pub enum Instr {
     Assign(String, String),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Eq, Hash, Copy)]
 pub enum CmpOp {
     Eq,
     Neq,
@@ -33,7 +33,7 @@ pub enum CmpOp {
 }
 
 #[non_exhaustive]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Eq, Hash, Copy)]
 pub enum Op {
     Add,
     Sub,

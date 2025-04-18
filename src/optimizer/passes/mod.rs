@@ -1,11 +1,13 @@
 pub mod constant_folding;
 pub mod dead_code_elimination;
 pub mod pass;
+pub mod global_value_numbering;
 
 use crate::optimizer::Instr;
 
 pub use constant_folding::ConstantFolding;
 pub use dead_code_elimination::DeadCodeElimination;
+pub use global_value_numbering::GlobalValueNumbering;
 pub use pass::Pass;
 
 /// Available optimization passes
@@ -13,6 +15,7 @@ pub use pass::Pass;
 pub enum PassType {
     ConstantFolding,
     DeadCodeElimination,
+    GlobalValueNumbering,
 }
 
 /// The main optimizer that runs optimization passes
@@ -23,10 +26,12 @@ impl Optimizer {
     pub fn run_all(&self, instrs: Vec<Instr>) -> Vec<Instr> {
         let cf = ConstantFolding;
         let dce = DeadCodeElimination;
+        let gvn = GlobalValueNumbering;
 
-        // First run constant folding, then dead code elimination
+        // First run constant folding, then dead code elimination, then global value numbering
         let folded = cf.optimize(instrs);
-        dce.optimize(folded)
+        let deduped = gvn.optimize(folded);
+        dce.optimize(deduped)
     }
 
     /// Run specific optimization passes in the given order
@@ -41,6 +46,10 @@ impl Optimizer {
                 }
                 PassType::DeadCodeElimination => {
                     let pass = DeadCodeElimination;
+                    result = pass.optimize(result);
+                }
+                PassType::GlobalValueNumbering => {
+                    let pass = GlobalValueNumbering;
                     result = pass.optimize(result);
                 }
             }
@@ -62,6 +71,7 @@ mod tests {
     #[test]
     fn test_optimizer() {
         let instrs = vec![
+            Instr::Label("entry".to_string()),
             Instr::Const("t0".to_string(), 2),
             Instr::Const("t1".to_string(), 3),
             Instr::BinOp(
@@ -80,6 +90,7 @@ mod tests {
         // after the constant folding pass, t0 and t1 are considered dead, since they aren't used
         // again.
         let expected = vec![
+            Instr::Label("entry".to_string()),
             Instr::Const("t2".to_string(), 5),
             Instr::Print("t2".to_string()),
         ];
@@ -90,6 +101,7 @@ mod tests {
     #[test]
     fn test_optimizer_relational_operators() {
         let instrs = vec![
+            Instr::Label("entry".to_string()),
             Instr::Const("t0".to_string(), 10),
             Instr::Const("t1".to_string(), 20),
             Instr::Cmp(
@@ -108,6 +120,7 @@ mod tests {
         // After constant folding: t2 = 1
         // Dead code elimination removes t0, t1, and t_unused
         let expected = vec![
+            Instr::Label("entry".to_string()),
             Instr::Const("t2".to_string(), 1),
             Instr::Print("t2".to_string()),
         ];
@@ -118,6 +131,7 @@ mod tests {
     #[test]
     fn test_optimizer_full_chain_folding() {
         let instrs = vec![
+            Instr::Label("entry".to_string()),
             // Arithmetic chain: 4 + 5 = 9
             Instr::Const("t0".to_string(), 4),
             Instr::Const("t1".to_string(), 5),
@@ -153,6 +167,7 @@ mod tests {
         let optimized = optimizer.run_all(instrs);
 
         let expected = vec![
+            Instr::Label("entry".to_string()),
             Instr::Const("t6".to_string(), 1), // final folded boolean result
             Instr::Print("t6".to_string()),
         ];
