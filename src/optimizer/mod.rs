@@ -225,24 +225,32 @@ impl SSA {
                 // 3. Setup Loop Scope and Identify Loop Variables
                 self.enter_scope(); // Scope for the loop (header + body)
                 // Identify variables defined in the outer scope (scope N-2)
-                let outer_scope_vars = self.scopes.get(self.scopes.len().saturating_sub(2))
-                                          .cloned().unwrap_or_default();
+                let outer_scope_vars = self
+                    .scopes
+                    .get(self.scopes.len().saturating_sub(2))
+                    .cloned()
+                    .unwrap_or_default();
 
                 // 4. Emit Incomplete Phi Nodes & Update Scope
                 let mut phi_data = HashMap::new(); // var_name -> (phi_ssa_name, outer_ssa_name, instr_idx)
                 for (var_name, outer_ssa_name) in &outer_scope_vars {
                     // We assume any variable from outer scope *might* be modified.
                     let phi_ssa_name = self.new_temp();
-                    let phi_instr = Instr::Phi(phi_ssa_name.clone(), vec![
-                        // Edge from pre-header
-                        (pre_header_label.clone(), outer_ssa_name.clone())
-                        // Back-edge from body will be added later by patching
-                    ]);
+                    let phi_instr = Instr::Phi(
+                        phi_ssa_name.clone(),
+                        vec![
+                            // Edge from pre-header
+                            (pre_header_label.clone(), outer_ssa_name.clone()), // Back-edge from body will be added later by patching
+                        ],
+                    );
                     let instr_idx = self.instructions.len();
                     self.emit(phi_instr);
                     // Update current scope to use the result of the phi node
                     self.assign_variable(var_name, &phi_ssa_name);
-                    phi_data.insert(var_name.clone(), (phi_ssa_name, outer_ssa_name.clone(), instr_idx));
+                    phi_data.insert(
+                        var_name.clone(),
+                        (phi_ssa_name, outer_ssa_name.clone(), instr_idx),
+                    );
                 }
 
                 // 5. Evaluate Loop Condition (uses phi results via current scope)
@@ -257,14 +265,25 @@ impl SSA {
                 // TODO: self.cfg.add_edge(&header_label, &body_label);
                 // TODO: self.cfg.add_edge(&header_label, &exit_label);
 
-
                 // 7. Start Body Block
                 // TODO: self.cfg.current_block = Some(body_label.clone());
                 self.emit(Instr::Label(body_label.clone()));
 
                 // 8. Execute Loop Body (uses the same loop scope)
-                // Note: If `body` contains blocks, it will manage its own sub-scopes
-                let body_result = self.stmt_to_ir(body);
+                match &**body {
+                    Stmt::Block { statements } => {
+                        let mut last_val = String::default();
+                        for stmt in statements {
+                            last_val = self.stmt_to_ir(stmt);
+                        }
+                        last_val
+                    }
+                    _ => {
+                        // If the body is not a block, execute it normally
+                        // It might contain blocks internally, which will handle their own scopes
+                        self.stmt_to_ir(body) // Pass the original Box<Stmt>
+                    }
+                };
 
                 // 9. Collect Final Variable Values from End of Body Scope
                 // This scope contains results of body execution.
@@ -275,7 +294,8 @@ impl SSA {
                 for (var_name, (phi_ssa_name, _, instr_idx)) in &phi_data {
                     // Find the SSA name for var_name at the end of the body.
                     // If it wasn't modified in the body, its value is the phi result itself.
-                    let body_end_val = body_end_scope.get(var_name)
+                    let body_end_val = body_end_scope
+                        .get(var_name)
                         .cloned()
                         .unwrap_or_else(|| phi_ssa_name.clone());
                     patches.push((*instr_idx, body_label.clone(), body_end_val));
@@ -285,16 +305,18 @@ impl SSA {
                 self.emit(Instr::Jump(header_label.clone()));
                 // TODO: self.cfg.add_edge(&body_label, &header_label);
 
-
                 // 12. Apply Phi Patches (Modify the Phi instructions emitted in step 4)
                 // This requires mutable access to self.instructions
                 for (idx, back_edge_label, back_edge_val) in patches {
-                     if let Some(Instr::Phi(_, edges)) = self.instructions.get_mut(idx) {
-                         // Directly use the mutably borrowed `edges`
-                         edges.push((back_edge_label, back_edge_val));
-                     } else {
-                         eprintln!("SSA Error: Expected Phi instruction at index {} for patching.", idx);
-                     }
+                    if let Some(Instr::Phi(_, edges)) = self.instructions.get_mut(idx) {
+                        // Directly use the mutably borrowed `edges`
+                        edges.push((back_edge_label, back_edge_val));
+                    } else {
+                        eprintln!(
+                            "SSA Error: Expected Phi instruction at index {} for patching.",
+                            idx
+                        );
+                    }
                 }
 
                 // 13. Start Exit Block
@@ -312,7 +334,7 @@ impl SSA {
 
                 // While loops usually don't produce a value, but stmt_to_ir expects a String.
                 // Return "" or perhaps the result of the last expression in the body? For now, empty.
-                "".to_string()
+                self.new_temp()
             }
             Stmt::If {
                 condition,
@@ -478,10 +500,12 @@ impl SSA {
                 if_result
             }
             Stmt::Block { statements } => {
-                for stmt in statements {
-                    self.stmt_to_ir(stmt);
-                }
-                String::default()
+                self.with_scope(|ssa| {
+                    for stmt in statements {
+                        ssa.stmt_to_ir(stmt);
+                    }
+                });
+                self.new_temp()
             }
             Stmt::Var { name, initializer } => {
                 let expr = initializer
@@ -580,37 +604,4 @@ impl SSA {
     fn emit(&mut self, instr: Instr) {
         self.instructions.push(instr);
     }
-
-    fn insert_phi_nodes(
-        &mut self,
-        join_label: &str,
-        pre_scope: &HashMap<String, String>,
-        post_scope: &HashMap<String, String>,
-    ) {
-        let preds = &self.cfg.blocks[join_label].preds.clone();
-        assert_eq!(preds.len(), 2, "Expected exactly two predecessors for join");
-
-        let (pred1, pred2) = (&preds[0], &preds[1]);
-
-        for (var, pre_val) in pre_scope.iter() {
-            if let Some(post_val) = post_scope.get(var) {
-                let phi_temp = self.new_temp();
-                self.emit(Instr::Phi(
-                    phi_temp.clone(),
-                    vec![
-                        (pred2.clone(), pre_val.clone()),
-                        (pred1.clone(), post_val.clone()),
-                    ],
-                ));
-
-                self.assign_variable(var, &phi_temp);
-            }
-        }
-    }
-
-    fn get_current_scope_vars(&self) -> HashMap<String, String> {
-        self.scopes.last().cloned().unwrap_or_default()
-    }
 }
-
-

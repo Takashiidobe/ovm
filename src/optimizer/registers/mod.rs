@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 pub const AVAILABLE_REGS: [&str; 6] = ["%rbx", "%rbp", "%r12", "%r13", "%r14", "%r15"];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Location {
     Register(String),
     Spill,
