@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet, HashMap};
 
 use crate::optimizer::Instr;
 
@@ -11,91 +11,176 @@ pub struct DeadCodeElimination;
 
 impl Pass for DeadCodeElimination {
     fn optimize(&self, instrs: Vec<Instr>) -> Vec<Instr> {
-        let mut used: HashSet<String> = HashSet::new();
-        let mut required_labels: HashSet<String> = HashSet::new();
-        let mut reversed = instrs.clone();
-        reversed.reverse();
+        if instrs.is_empty() { return vec![]; }
 
-        let mut optimized = Vec::new();
+        // --- Pass 1: Map definitions and identify block structure (copied from previous attempt) ---
+        let mut def_map: HashMap<String, usize> = HashMap::new(); // var_name -> instr_idx defining it
+        let mut blocks = BTreeMap::new(); // label -> (start_idx, end_idx)
+        let mut leaders = HashSet::new();
+        leaders.insert(0);
+        let mut label_map = HashMap::new(); // label -> start_idx
 
-        // Pre-pass to record labels that can't be deleted (otherwise code will try to jump to a
-        // target that doesn't exist).
-        for instr in &instrs {
+        for (idx, instr) in instrs.iter().enumerate() {
+            // Populate def_map
             match instr {
+                Instr::Const(d, _) |
+                Instr::BinOp(d, _, _, _) |
+                Instr::Cmp(d, _, _, _) |
+                Instr::Phi(d, _) |
+                Instr::Assign(d, _) => { def_map.insert(d.clone(), idx); }
+                _ => {}
+            }
+
+            // Identify leaders and labels
+            if let Instr::Label(l) = instr {
+                leaders.insert(idx);
+                label_map.insert(l.clone(), idx);
+            }
+            match instr {
+                 Instr::Jump(_) | Instr::BranchIf(_, _, _) => {
+                     if idx + 1 < instrs.len() { leaders.insert(idx + 1); }
+                 }
+                 _ => {}
+            }
+        }
+         for instr in &instrs { // Add jump targets to leaders
+             match instr {
+                 Instr::Jump(t) | Instr::BranchIf(_, t, _) => { if let Some(idx) = label_map.get(t) { leaders.insert(*idx); } }
+                 _ => {}
+             }
+         }
+
+        let mut sorted_leaders: Vec<_> = leaders.iter().cloned().collect();
+        sorted_leaders.sort();
+        let mut instr_to_label = HashMap::new(); // instr_idx -> block_label
+
+        for i in 0..sorted_leaders.len() {
+            let start = sorted_leaders[i];
+            let end = if i + 1 < sorted_leaders.len() { sorted_leaders[i + 1] } else { instrs.len() };
+            let label = instrs.get(start).and_then(|instr| if let Instr::Label(l) = instr { Some(l.clone()) } else { None }).unwrap_or_else(|| format!("block_{}", start));
+            label_map.entry(label.clone()).or_insert(start);
+            blocks.insert(label.clone(), (start, end));
+            for idx in start..end {
+                instr_to_label.insert(idx, label.clone());
+            }
+        }
+
+        // --- Pass 2: Mark Required Labels (Targets + Fallthrough) ---
+        let mut required_labels: HashSet<String> = HashSet::new();
+        for (_label, (_start, end)) in &blocks {
+            if *end == 0 || *end > instrs.len() { continue; } // Skip empty/invalid blocks
+            let last_instr_idx = end - 1;
+             if last_instr_idx >= instrs.len() { continue; }
+            let last_instr = &instrs[last_instr_idx];
+
+            match last_instr {
                 Instr::BranchIf(_, then_lbl, else_lbl) => {
                     required_labels.insert(then_lbl.clone());
                     required_labels.insert(else_lbl.clone());
                 }
-                Instr::Jump(label) => {
-                    required_labels.insert(label.clone());
+                Instr::Jump(target_lbl) => {
+                    required_labels.insert(target_lbl.clone());
                 }
-                _ => {}
+                _ => { // Fallthrough case
+                    if *end < instrs.len() {
+                        if let Some(fallthrough_label) = instr_to_label.get(end) {
+                            if blocks.get(fallthrough_label).map_or(false, |(s,_)| *s == *end) {
+                                required_labels.insert(fallthrough_label.clone());
+                            }
+                        }
+                    }
+                }
             }
         }
+        if let Some(entry_label) = instr_to_label.get(&0) { // Ensure entry label is kept
+             required_labels.insert(entry_label.clone());
+        }
 
-        for instr in &reversed {
+        // --- Pass 3: Mark Essential Instructions using Worklist ---
+        let mut essential_instrs: HashSet<usize> = HashSet::new();
+        let mut live_vars: HashSet<String> = HashSet::new();
+        let mut worklist: Vec<String> = Vec::new(); // Variables whose definitions need to be marked essential
+
+        // Initialize essential instructions and live vars
+        for (idx, instr) in instrs.iter().enumerate() {
+            let mut is_essential = false;
+            let mut uses = Vec::new();
+
             match instr {
                 Instr::Print(var) => {
-                    used.insert(var.clone());
-                    optimized.push(instr.clone());
+                    is_essential = true;
+                    uses.push(var.clone());
                 }
-                Instr::BinOp(dest, left, _, right) => {
-                    if used.contains(dest) {
-                        used.insert(left.clone());
-                        used.insert(right.clone());
-                        optimized.push(instr.clone());
-                    }
+                Instr::BranchIf(cond, _, _) => {
+                    is_essential = true;
+                    uses.push(cond.clone());
                 }
-                Instr::Cmp(dest, left, _, right) => {
-                    if used.contains(dest) {
-                        used.insert(left.clone());
-                        used.insert(right.clone());
-                        optimized.push(instr.clone());
-                    }
-                }
-                Instr::BranchIf(cond, then_label, else_label) => {
-                    used.insert(cond.clone());
-                    required_labels.insert(then_label.clone());
-                    required_labels.insert(else_label.clone());
-                    optimized.push(instr.clone());
-                }
-                Instr::Jump(label) => {
-                    required_labels.insert(label.clone());
-                    optimized.push(instr.clone());
+                Instr::Jump(_) => {
+                    is_essential = true;
                 }
                 Instr::Label(label) => {
                     if required_labels.contains(label) {
-                        optimized.push(instr.clone());
+                        is_essential = true;
                     }
                 }
-                Instr::Phi(dest, preds) => {
-                    if used.contains(dest) {
-                        for (_, pred_val) in preds.iter() {
-                            used.insert(pred_val.clone());
-                        }
-                        optimized.push(instr.clone());
-                    }
-                }
-                Instr::Const(dest, _) => {
-                    if used.contains(dest) {
-                        optimized.push(instr.clone());
-                    }
-                }
-                Instr::Assign(dest, src) => {
-                    if used.contains(dest) {
-                        used.insert(src.clone());
-                        optimized.push(instr.clone());
+                // Other instructions are essential only if their results are used.
+                // Phi uses are handled below.
+                _ => {}
+            }
+
+            if is_essential {
+                essential_instrs.insert(idx);
+                for used_var in uses {
+                    if live_vars.insert(used_var.clone()) { // If newly inserted
+                        worklist.push(used_var);
                     }
                 }
             }
         }
 
-        optimized.reverse();
+        // Propagate liveness backward
+        while let Some(var) = worklist.pop() {
+            if let Some(def_idx) = def_map.get(&var) {
+                if essential_instrs.insert(*def_idx) { // If the defining instr wasn't already essential
+                    let defining_instr = &instrs[*def_idx];
+                    let uses = Self::get_instr_uses(defining_instr); // Assign Vec<String> directly
+                    for used_var in uses {
+                        if live_vars.insert(used_var.clone()) { // If newly inserted
+                            worklist.push(used_var);
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Pass 4: Filter Instructions ---
+        let optimized: Vec<Instr> = instrs
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| essential_instrs.contains(idx))
+            .map(|(_, instr)| instr)
+            .collect();
+
         optimized
     }
 
     fn name(&self) -> &'static str {
         "DeadCodeElimination"
+    }
+}
+
+// Helper to get just the uses of an instruction
+impl DeadCodeElimination {
+    fn get_instr_uses(instr: &Instr) -> Vec<String> {
+        match instr {
+            Instr::BinOp(_, left, _, right) => vec![left.clone(), right.clone()],
+            Instr::Print(var) => vec![var.clone()],
+            Instr::Cmp(_, left, _, right) => vec![left.clone(), right.clone()],
+            Instr::BranchIf(cond, _, _) => vec![cond.clone()],
+            Instr::Phi(_, preds) => preds.iter().map(|(_, val)| val.clone()).collect(),
+            Instr::Assign(_, src) => vec![src.clone()],
+            Instr::Const(_, _) | Instr::Jump(_) | Instr::Label(_) => vec![],
+        }
     }
 }
 
@@ -174,3 +259,4 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 }
+
