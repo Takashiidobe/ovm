@@ -1,0 +1,12 @@
+---
+source: tests/test_programs.rs
+expression: test_output
+input_file: tests/programs/nested_scopes.ovm
+---
+status: 0
+stdout:
+  - "1"
+  - "2"
+  - "4"
+  - "1"
+stderr: []

@@ -1,0 +1,20 @@
+---
+source: tests/test_programs.rs
+expression: test_output
+input_file: tests/programs/for.ovm
+---
+status: 0
+stdout:
+  - "10"
+  - "0"
+  - "1"
+  - "2"
+  - "3"
+  - "4"
+  - "5"
+  - "6"
+  - "7"
+  - "8"
+  - "9"
+  - "20"
+stderr: []
