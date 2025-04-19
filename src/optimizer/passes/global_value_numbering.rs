@@ -27,25 +27,25 @@ impl GlobalValueNumbering {
             }
 
             match instr {
-                Instr::Const(dest, _) => {
-                    let vn = *next_vn;
-                    *next_vn += 1;
-                    current_var_to_vn.insert(dest.clone(), vn);
-                    global_vn_to_canonical_var.insert(vn, dest.clone());
-                    new_instrs.push(instr.clone());
-                }
-                Instr::BinOp(dest, src1, op, src2) => {
-                    if let (Some(&vn1), Some(&vn2)) =
-                        (current_var_to_vn.get(src1), current_var_to_vn.get(src2))
-                    {
-                        let key = ExprKey::from_binop(*op, vn1, vn2);
-                        if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
-                            let canonical_var = global_vn_to_canonical_var
-                                .get(&existing_vn)
-                                .expect("Canonical var must exist");
+                Instr::Const(dest, val) => {
+                    let key = ExprKey::Const(*val);
+                    if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
+                        // Value already exists, use Assign
+                        if let Some(canonical_var) = global_vn_to_canonical_var.get(&existing_vn) {
+                            // Only assign if the canonical variable isn't the current dest
+                            if canonical_var != dest {
+                                new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
+                            } else {
+                                // If dest is already the canonical var, the original Const might be needed
+                                // if this is the first time we see it in *this* block's processing,
+                                // even if globally known. Re-emit the const.
+                                new_instrs.push(instr.clone());
+                            }
                             current_var_to_vn.insert(dest.clone(), existing_vn);
-                            new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
                         } else {
+                             // This case should ideally not happen if VN state is consistent,
+                             // but defensively re-emit the const if canonical var lookup fails.
+                            eprintln!("Warning: GVN found VN for Const but no canonical var. Re-emitting.");
                             let vn = *next_vn;
                             *next_vn += 1;
                             global_expr_to_vn.insert(key, vn);
@@ -54,24 +54,89 @@ impl GlobalValueNumbering {
                             new_instrs.push(instr.clone());
                         }
                     } else {
+                        // New constant value
                         let vn = *next_vn;
                         *next_vn += 1;
+                        global_expr_to_vn.insert(key, vn);
+                        current_var_to_vn.insert(dest.clone(), vn);
+                        global_vn_to_canonical_var.insert(vn, dest.clone());
+                        new_instrs.push(instr.clone()); // Keep the original Const instruction
+                    }
+                }
+                Instr::BinOp(dest, src1, op, src2) => {
+                    // Ensure operands have value numbers before proceeding
+                    if let (Some(&vn1), Some(&vn2)) =
+                        (current_var_to_vn.get(src1), current_var_to_vn.get(src2))
+                    {
+                        let key = ExprKey::from_binop(*op, vn1, vn2);
+                        if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
+                             // Expression result already computed
+                            if let Some(canonical_var) = global_vn_to_canonical_var.get(&existing_vn) {
+                                if canonical_var != dest {
+                                    new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
+                                } else {
+                                    // If dest is the canonical var, re-emit original BinOp
+                                     // (Similar reasoning to Const: first encounter in this block processing)
+                                    new_instrs.push(instr.clone());
+                                }
+                                current_var_to_vn.insert(dest.clone(), existing_vn);
+                            } else {
+                                // Defensive: canonical var missing
+                                eprintln!("Warning: GVN found VN for BinOp but no canonical var. Re-emitting.");
+                                let vn = *next_vn;
+                                *next_vn += 1;
+                                global_expr_to_vn.insert(key, vn);
+                                current_var_to_vn.insert(dest.clone(), vn);
+                                global_vn_to_canonical_var.insert(vn, dest.clone());
+                                new_instrs.push(instr.clone());
+                            }
+                        } else {
+                            // New expression result
+                            let vn = *next_vn;
+                            *next_vn += 1;
+                            global_expr_to_vn.insert(key, vn);
+                            current_var_to_vn.insert(dest.clone(), vn);
+                            global_vn_to_canonical_var.insert(vn, dest.clone());
+                            new_instrs.push(instr.clone()); // Keep original BinOp
+                        }
+                    } else {
+                         // Operands not found in VN map (should not happen in SSA/well-formed IR)
+                         // Fallback: Assign a new VN and keep the original instruction
+                         eprintln!("Warning: GVN operands missing VN for BinOp. Assigning new VN.");
+                        let vn = *next_vn;
+                        *next_vn += 1;
+                        // We don't add to global_expr_to_vn as we don't know the operand VNs
                         current_var_to_vn.insert(dest.clone(), vn);
                         global_vn_to_canonical_var.insert(vn, dest.clone());
                         new_instrs.push(instr.clone());
                     }
                 }
                 Instr::Cmp(dest, src1, op, src2) => {
-                    if let (Some(&vn1), Some(&vn2)) =
+                    // Ensure operands have value numbers
+                     if let (Some(&vn1), Some(&vn2)) =
                         (current_var_to_vn.get(src1), current_var_to_vn.get(src2))
                     {
+                        // Note: Comparison result depends on Op, vn1, vn2.
+                        // Not making comparison commutative in key for simplicity,
+                        // but could be done if needed (e.g., swapping operands and flipping CmpOp).
                         let key = ExprKey::Cmp(*op, vn1, vn2);
                         if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
-                            let canonical_var = global_vn_to_canonical_var
-                                .get(&existing_vn)
-                                .expect("Canonical var must exist");
-                            current_var_to_vn.insert(dest.clone(), existing_vn);
-                            new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
+                            if let Some(canonical_var) = global_vn_to_canonical_var.get(&existing_vn) {
+                                if canonical_var != dest {
+                                    new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
+                                } else {
+                                    new_instrs.push(instr.clone()); // Dest is canonical
+                                }
+                                current_var_to_vn.insert(dest.clone(), existing_vn);
+                            } else {
+                                eprintln!("Warning: GVN found VN for Cmp but no canonical var. Re-emitting.");
+                                let vn = *next_vn;
+                                *next_vn += 1;
+                                global_expr_to_vn.insert(key, vn);
+                                current_var_to_vn.insert(dest.clone(), vn);
+                                global_vn_to_canonical_var.insert(vn, dest.clone());
+                                new_instrs.push(instr.clone());
+                            }
                         } else {
                             let vn = *next_vn;
                             *next_vn += 1;
@@ -81,6 +146,7 @@ impl GlobalValueNumbering {
                             new_instrs.push(instr.clone());
                         }
                     } else {
+                         eprintln!("Warning: GVN operands missing VN for Cmp. Assigning new VN.");
                         let vn = *next_vn;
                         *next_vn += 1;
                         current_var_to_vn.insert(dest.clone(), vn);
@@ -91,8 +157,12 @@ impl GlobalValueNumbering {
                 Instr::Assign(dest, src) => {
                     if let Some(&src_vn) = current_var_to_vn.get(src) {
                         current_var_to_vn.insert(dest.clone(), src_vn);
-                        new_instrs.push(instr.clone());
+                        // Check if dest == src. If so, the assignment is redundant (could be removed by another pass)
+                        if dest != src {
+                             new_instrs.push(instr.clone());
+                        }
                     } else {
+                         eprintln!("Warning: GVN source missing VN for Assign. Assigning new VN to dest.");
                         let vn = *next_vn;
                         *next_vn += 1;
                         current_var_to_vn.insert(dest.clone(), vn);
@@ -101,15 +171,23 @@ impl GlobalValueNumbering {
                     }
                 }
                 Instr::Phi(dest, _) => {
-                    if !current_var_to_vn.contains_key(dest) {
-                        let vn = *next_vn;
-                        *next_vn += 1;
-                        current_var_to_vn.insert(dest.clone(), vn);
-                        global_vn_to_canonical_var.insert(vn, dest.clone());
-                    }
+                    // Phi node handling is complex in GVN.
+                    // A simple approach is to always assign a new VN to Phi results
+                    // as their value depends on the control flow path taken.
+                    // More advanced GVN might try to equate Phis if their inputs match
+                    // under all predecessor paths, but that requires more complex state merging.
+                    // For now, let's ensure Phi destinations get a VN but don't participate
+                    // in expression key lookups directly based on sources.
+                    let vn = *next_vn;
+                    *next_vn += 1;
+                    current_var_to_vn.insert(dest.clone(), vn);
+                    global_vn_to_canonical_var.insert(vn, dest.clone());
+                    // Keep the original Phi instruction; its resolution happens later?
                     new_instrs.push(instr.clone());
                 }
                 _ => {
+                    // Preserve instructions like Print, Jump, BranchIf, etc.
+                    // Potentially invalidate VN for registers modified by calls, etc. if added later.
                     new_instrs.push(instr.clone());
                 }
             }
@@ -411,8 +489,10 @@ impl Pass for GlobalValueNumbering {
 
 // Helper structure to represent expressions canonically for hashing.
 // Ensures commutativity for relevant operations.
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ExprKey {
+    // Constant value
+    Const(i64),
     // Op, vn1, vn2 (vn1 <= vn2 for commutative ops)
     BinOp(Op, usize, usize),
     // CmpOp, vn1, vn2
