@@ -137,23 +137,6 @@ impl SSA {
         self.scopes.pop().expect("No scope exists")
     }
 
-    fn new_var_version(&mut self, name: &str) -> String {
-        let version = self.var_versions.entry(name.to_string()).or_default();
-        *version += 1;
-        format!("{}_{}", name, version)
-    }
-
-    fn define_variable(&mut self, name: &str) -> String {
-        let var_name = self.new_var_version(name);
-
-        self.scopes
-            .last_mut()
-            .unwrap()
-            .insert(name.to_string(), var_name.clone());
-
-        var_name
-    }
-
     fn assign_variable(&mut self, name: &str, ssa_temp: &str) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), ssa_temp.to_string());
@@ -213,26 +196,32 @@ impl SSA {
                 let header_label = self.new_label("loop_header");
                 let body_label = self.new_label("loop_body");
                 let exit_label = self.new_label("loop_exit");
-                // FIXME: This assumes the block before the loop is always main
-                // In reality, we need the actual label of the block ending before this jump.
-                let pre_header_label = "main".to_string();
+                let pre_header_label = self
+                    .instructions
+                    .iter()
+                    .rfind(|i| matches!(i, Instr::Label(_)))
+                    .cloned()
+                    .expect("no previous label, aborting");
 
-                // 1. Jump from pre-header to the loop header
-                self.emit(Instr::Jump(header_label.clone()));
+                let previous_label = match pre_header_label {
+                    Instr::Label(s) => s,
+                    _ => unreachable!(),
+                };
+
                 // TODO: self.cfg.add_edge(&pre_header_label, &header_label);
 
                 // 2. Start Header Block
-                // TODO: self.cfg.current_block = Some(header_label.clone());
+                // self.cfg.current_block = Some(header_label.clone());
                 self.emit(Instr::Label(header_label.clone()));
+
+                let outer_scope_vars = self
+                    .scopes
+                    .get(self.scopes.len().saturating_sub(1))
+                    .cloned()
+                    .unwrap_or_default();
 
                 // 3. Setup Loop Scope and Identify Loop Variables
                 self.enter_scope(); // Scope for the loop (header + body)
-                // Identify variables defined in the outer scope (scope N-2)
-                let outer_scope_vars = self
-                    .scopes
-                    .get(self.scopes.len().saturating_sub(2))
-                    .cloned()
-                    .unwrap_or_default();
 
                 // 4. Emit Incomplete Phi Nodes & Update Scope
                 let mut phi_data = HashMap::new(); // var_name -> (phi_ssa_name, outer_ssa_name, instr_idx)
@@ -243,7 +232,7 @@ impl SSA {
                         phi_ssa_name.clone(),
                         vec![
                             // Edge from pre-header
-                            (pre_header_label.clone(), outer_ssa_name.clone()), // Back-edge from body will be added later by patching
+                            (previous_label.clone(), outer_ssa_name.clone()), // Back-edge from body will be added later by patching
                         ],
                     );
                     let instr_idx = self.instructions.len();
@@ -275,11 +264,10 @@ impl SSA {
                 // 8. Execute Loop Body (uses the same loop scope)
                 match &**body {
                     Stmt::Block { statements } => {
-                        let mut last_val = String::default();
                         for stmt in statements {
-                            last_val = self.stmt_to_ir(stmt);
+                            self.stmt_to_ir(stmt);
                         }
-                        last_val
+                        self.new_temp()
                     }
                     _ => {
                         // If the body is not a block, execute it normally
@@ -324,7 +312,7 @@ impl SSA {
 
                 // 13. Start Exit Block
                 self.exit_scope(); // Exit the main loop scope
-                // TODO: self.cfg.current_block = Some(exit_label.clone());
+                // self.cfg.current_block = Some(exit_label.clone());
                 self.emit(Instr::Label(exit_label.clone()));
                 self.enter_scope(); // Enter scope for code after the loop
 
@@ -335,8 +323,6 @@ impl SSA {
                     self.assign_variable(&var_name, &phi_ssa_name);
                 }
 
-                // While loops usually don't produce a value, but stmt_to_ir expects a String.
-                // Return "" or perhaps the result of the last expression in the body? For now, empty.
                 self.new_temp()
             }
             Stmt::If {
@@ -441,7 +427,7 @@ impl SSA {
                                     (else_label.clone(), t2.clone()),
                                 ],
                             ));
-                            self.define_variable(var);
+                            self.assign_variable(var, &phi);
                         }
 
                         // Case 2: Variable modified in only the 'then' branch
@@ -460,7 +446,8 @@ impl SSA {
                                     (else_label.clone(), outer_val),
                                 ],
                             ));
-                            self.define_variable(var);
+
+                            self.assign_variable(var, &phi);
                         }
 
                         // Case 2 (variant): Variable modified only in the 'else' branch
@@ -479,14 +466,15 @@ impl SSA {
                                     (else_label.clone(), t.clone()),
                                 ],
                             ));
-                            self.define_variable(var);
+                            self.assign_variable(var, &phi);
                         }
 
                         // Case 3: Variable not modified in either branch
                         (None, None) => {
                             if outer_scope.contains_key(var) {
                                 // Just bring the outer scope value into current scope
-                                self.define_variable(var);
+                                let phi = self.new_temp();
+                                self.assign_variable(var, &phi);
                             }
                             // Do nothing if not in any scope
                         }
@@ -494,7 +482,8 @@ impl SSA {
                         // Case 4: Modified in both branches with same value
                         (Some(t1), Some(t2)) if t1 == t2 => {
                             // No phi needed, just reuse same value
-                            self.define_variable(var);
+                            let phi = self.new_temp();
+                            self.assign_variable(var, &phi);
                         }
 
                         _ => unreachable!(),
@@ -517,7 +506,8 @@ impl SSA {
                 let rhs_temp = self.expr_to_ir(&expr);
                 let var_name = name.lexeme.clone();
 
-                let ssa_name = self.define_variable(&var_name);
+                let ssa_name = self.new_temp();
+                self.assign_variable(&var_name, &ssa_name);
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
                 self.assign_variable(&var_name, &ssa_name);
                 ssa_name
@@ -593,7 +583,8 @@ impl SSA {
             Expr::Assign { name, value } => {
                 let rhs_temp = self.expr_to_ir(value);
                 let var_name = name.lexeme.clone();
-                let ssa_name = self.define_variable(&var_name);
+                let ssa_name = self.new_temp();
+                self.assign_variable(&var_name, &ssa_name);
 
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
 
