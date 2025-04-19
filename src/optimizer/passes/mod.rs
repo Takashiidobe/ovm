@@ -1,13 +1,17 @@
+pub mod branch_elimination;
 pub mod constant_folding;
 pub mod dead_code_elimination;
 pub mod global_value_numbering;
+pub mod move_coalescing;
 pub mod pass;
 
 use crate::optimizer::Instr;
 
+pub use branch_elimination::BranchElimination;
 pub use constant_folding::ConstantFolding;
 pub use dead_code_elimination::DeadCodeElimination;
 pub use global_value_numbering::GlobalValueNumbering;
+pub use move_coalescing::MoveCoalescing;
 pub use pass::Pass;
 
 /// Available optimization passes
@@ -16,6 +20,8 @@ pub enum PassType {
     ConstantFolding,
     DeadCodeElimination,
     GlobalValueNumbering,
+    MoveCoalescing,
+    BranchElimination,
 }
 
 /// The main optimizer that runs optimization passes
@@ -25,13 +31,21 @@ impl Optimizer {
     /// Run all available optimization passes in order
     pub fn run_all(&self, instrs: Vec<Instr>) -> Vec<Instr> {
         let cf = ConstantFolding;
+        let be = BranchElimination;
         let dce = DeadCodeElimination;
+        let mc = MoveCoalescing;
         let gvn = GlobalValueNumbering;
 
-        // First run constant folding, then dead code elimination, then global value numbering
-        let folded = cf.optimize(instrs);
-        let deduped = gvn.optimize(folded);
-        dce.optimize(deduped)
+        // Run passes in a logical order: CF -> BE -> MC -> DCE -> GVN -> DCE
+        let mut current_instrs = instrs;
+        current_instrs = cf.optimize(current_instrs);
+        current_instrs = be.optimize(current_instrs);
+        current_instrs = mc.optimize(current_instrs);
+        current_instrs = dce.optimize(current_instrs);
+        current_instrs = gvn.optimize(current_instrs);
+        current_instrs = dce.optimize(current_instrs);
+
+        current_instrs
     }
 
     /// Run specific optimization passes in the given order
@@ -50,6 +64,14 @@ impl Optimizer {
                 }
                 PassType::GlobalValueNumbering => {
                     let pass = GlobalValueNumbering;
+                    result = pass.optimize(result);
+                }
+                PassType::MoveCoalescing => {
+                    let pass = MoveCoalescing;
+                    result = pass.optimize(result);
+                }
+                PassType::BranchElimination => {
+                    let pass = BranchElimination;
                     result = pass.optimize(result);
                 }
             }

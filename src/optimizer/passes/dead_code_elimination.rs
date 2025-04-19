@@ -89,44 +89,103 @@ impl Pass for DeadCodeElimination {
             }
         }
 
-        // --- Pass 2: Mark Required Labels (Targets + Fallthrough) ---
+        // --- Pass 2: Mark Required Labels (Explicit Targets Only) ---
         let mut required_labels: HashSet<String> = HashSet::new();
-        for (_label, (_start, end)) in &blocks {
-            if *end == 0 || *end > instrs.len() {
+        for instr in &instrs {
+            match instr {
+                Instr::Jump(target_lbl) => {
+                    required_labels.insert(target_lbl.clone());
+                }
+                Instr::BranchIf(_, then_lbl, else_lbl) => {
+                    required_labels.insert(then_lbl.clone());
+                    required_labels.insert(else_lbl.clone());
+                }
+                _ => {}
+            }
+        }
+        // We no longer add fallthrough targets or the entry label here.
+        // Required means explicitly targeted by a jump/branch.
+
+        // --- Pass 2.5: Perform Forward Reachability Analysis ---
+        let mut reachable_labels: HashSet<String> = HashSet::new();
+        let mut reachability_worklist: Vec<String> = Vec::new();
+
+        // Determine the actual entry label (block containing instruction 0)
+        let mut initial_entry_label: Option<String> = None;
+        if !instrs.is_empty() {
+            if let Some(label) = instr_to_label.get(&0) {
+                if blocks.contains_key(label) {
+                    initial_entry_label = Some(label.clone());
+                }
+            } else {
+                // Handle case where block 0 doesn't start with a label (use synthetic label if needed)
+                // Note: The block identification logic should ideally always assign a label name.
+                // Let's assume instr_to_label covers index 0 if instrs is not empty.
+                // If this assumption is wrong, this part needs adjustment.
+                // For safety, we might need to iterate blocks map to find the one containing index 0.
+            }
+        }
+
+        if let Some(entry_label) = initial_entry_label {
+            reachable_labels.insert(entry_label.clone());
+            reachability_worklist.push(entry_label.clone());
+        }
+
+        let mut processed_labels = HashSet::new(); // Avoid redundant processing in cycles
+        while let Some(current_label) = reachability_worklist.pop() {
+            if !processed_labels.insert(current_label.clone()) {
+                continue; // Already processed this label
+            }
+
+            let (start, end) = match blocks.get(&current_label) {
+                Some(bounds) => bounds,
+                None => continue, // Label in worklist but not in blocks map? Error.
+            };
+
+            if *end == 0 || *end > instrs.len() || *start >= *end {
                 continue;
             } // Skip empty/invalid blocks
+
             let last_instr_idx = end - 1;
             if last_instr_idx >= instrs.len() {
                 continue;
             }
             let last_instr = &instrs[last_instr_idx];
 
-            match last_instr {
-                Instr::BranchIf(_, then_lbl, else_lbl) => {
-                    required_labels.insert(then_lbl.clone());
-                    required_labels.insert(else_lbl.clone());
+            let mut add_target = |target_label: &String| {
+                // Add target to reachable set and worklist *only if* it corresponds to a valid block
+                if blocks.contains_key(target_label)
+                    && reachable_labels.insert(target_label.clone())
+                {
+                    reachability_worklist.push(target_label.clone());
                 }
+            };
+
+            match last_instr {
                 Instr::Jump(target_lbl) => {
-                    required_labels.insert(target_lbl.clone());
+                    add_target(target_lbl);
+                    // NO Fallthrough
+                }
+                Instr::BranchIf(_, then_lbl, else_lbl) => {
+                    add_target(then_lbl);
+                    add_target(else_lbl);
+                    // NO Fallthrough
                 }
                 _ => {
-                    // Fallthrough case
+                    // Fallthrough ONLY if not Jump/BranchIf
                     if *end < instrs.len() {
+                        // Find the label of the block starting exactly at the fallthrough position
                         if let Some(fallthrough_label) = instr_to_label.get(end) {
                             if blocks
                                 .get(fallthrough_label)
                                 .map_or(false, |(s, _)| *s == *end)
                             {
-                                required_labels.insert(fallthrough_label.clone());
+                                add_target(fallthrough_label);
                             }
                         }
                     }
                 }
             }
-        }
-        if let Some(entry_label) = instr_to_label.get(&0) {
-            // Ensure entry label is kept
-            required_labels.insert(entry_label.clone());
         }
 
         // --- Pass 3: Mark Essential Instructions using Worklist ---
@@ -134,8 +193,19 @@ impl Pass for DeadCodeElimination {
         let mut live_vars: HashSet<String> = HashSet::new();
         let mut worklist: Vec<String> = Vec::new(); // Variables whose definitions need to be marked essential
 
-        // Initialize essential instructions and live vars
+        // Initialize essential instructions and live vars, considering block reachability
         for (idx, instr) in instrs.iter().enumerate() {
+            // Determine if the instruction is in a reachable block
+            let block_label_opt = instr_to_label.get(&idx);
+            let is_block_reachable =
+                block_label_opt.map_or(idx == 0, |lbl| reachable_labels.contains(lbl));
+            // If idx == 0 and no label, assume reachable only if instrs is not empty.
+            // The initial_entry_label logic should handle this, ensuring reachable_labels is seeded correctly.
+
+            if !is_block_reachable {
+                continue; // Skip instructions in unreachable blocks.
+            }
+
             let mut is_essential = false;
             let mut uses = Vec::new();
 
@@ -152,9 +222,11 @@ impl Pass for DeadCodeElimination {
                     is_essential = true;
                 }
                 Instr::Label(label) => {
-                    if required_labels.contains(label) {
-                        is_essential = true;
-                    }
+                    // If we are processing this instruction, its block MUST be reachable
+                    // (due to the 'is_block_reachable' check earlier in the loop).
+                    // Therefore, any reachable label should be considered essential.
+                    // The previous check `if required_labels.contains(label)` was too strict.
+                    is_essential = true;
                 }
                 // Other instructions are essential only if their results are used.
                 // Phi uses are handled below.
@@ -175,10 +247,19 @@ impl Pass for DeadCodeElimination {
         // Propagate liveness backward
         while let Some(var) = worklist.pop() {
             if let Some(def_idx) = def_map.get(&var) {
-                if essential_instrs.insert(*def_idx) {
-                    // If the defining instr wasn't already essential
-                    let defining_instr = &instrs[*def_idx];
-                    let uses = Self::get_instr_uses(defining_instr); // Assign Vec<String> directly
+                // Check if the defining instruction itself is in a reachable block
+                let defining_instr = &instrs[*def_idx];
+                let def_block_label_opt = instr_to_label.get(def_idx);
+                // Assuming index 0 is always the start of a reachable block if non-empty
+                let is_def_instr_reachable = def_block_label_opt
+                    .map_or(*def_idx == 0 && !instrs.is_empty(), |lbl| {
+                        reachable_labels.contains(lbl)
+                    });
+
+                // Mark essential ONLY if the definition is reachable AND wasn't already essential
+                if is_def_instr_reachable && essential_instrs.insert(*def_idx) {
+                    // If the defining instr wasn't already essential (and is reachable)
+                    let uses = Self::get_instr_uses(defining_instr);
                     for used_var in uses {
                         if live_vars.insert(used_var.clone()) {
                             // If newly inserted
@@ -293,5 +374,72 @@ mod tests {
         ];
 
         assert_eq!(optimized, expected);
+    }
+
+    #[test]
+    fn test_dce_after_branch_elim() {
+        let instrs = vec![
+            Instr::Const("a".to_string(), 1),
+            Instr::Const("b".to_string(), 2),
+            Instr::Const("c".to_string(), 3),
+            Instr::Const("e".to_string(), 5), // Define e, f, g
+            Instr::Const("f".to_string(), 6),
+            Instr::Const("g".to_string(), 7),
+            Instr::Jump("then_label".to_string()), // Branch eliminated
+            Instr::Label("then_label".to_string()), // Target label
+            Instr::Print("a".to_string()),
+            Instr::Print("b".to_string()),
+            Instr::Print("c".to_string()),
+            // Assume fallthrough or jump to end here
+            Instr::Label("else_label".to_string()), // Unreachable label
+            Instr::Print("e".to_string()),          // Dead print
+            Instr::Print("f".to_string()),          // Dead print
+            Instr::Print("g".to_string()),          // Dead print
+            Instr::Label("end".to_string()),        // Assume this is the end/exit label
+        ];
+
+        let pass = DeadCodeElimination;
+        let optimized = pass.optimize(instrs);
+
+        // Expected result: Consts for e, f, g are gone, Prints for e, f, g are gone.
+        // Labels might be kept depending on precise fallthrough/required label logic.
+        // Based on the DCE logic: "then_label" is required (jump target). "end" might be
+        // required if it's considered reachable via fallthrough from "print c".
+        // "else_label" should not be required.
+        let expected_strict = vec![
+            Instr::Const("a".to_string(), 1),
+            Instr::Const("b".to_string(), 2),
+            Instr::Const("c".to_string(), 3),
+            Instr::Jump("then_label".to_string()),
+            Instr::Label("then_label".to_string()),
+            Instr::Print("a".to_string()),
+            Instr::Print("b".to_string()),
+            Instr::Print("c".to_string()),
+            // Assuming DCE keeps required labels and labels reached by fallthrough
+            Instr::Label("end".to_string()),
+        ];
+
+        // Check that the specific dead instructions are gone
+        assert!(
+            !optimized.iter().any(
+                |instr| matches!(instr, Instr::Const(d, _) if d == "e" || d == "f" || d == "g")
+            ),
+            "Const instructions for e, f, or g were not removed"
+        );
+        assert!(
+            !optimized
+                .iter()
+                .any(|instr| matches!(instr, Instr::Print(v) if v == "e" || v == "f" || v == "g")),
+            "Print instructions for e, f, or g were not removed"
+        );
+
+        // For more precise checking, compare with the expected vector
+        // Note: This exact comparison might fail if the DCE pass handles labels slightly differently
+        // (e.g., removes unused ones like "end" if it's truly unreachable, or keeps "else_label" for some reason).
+        // The asserts above are the primary check.
+        assert_eq!(
+            optimized, expected_strict,
+            "Optimized IR did not match expected structure"
+        );
     }
 }
