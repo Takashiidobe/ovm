@@ -122,7 +122,7 @@ impl Default for SSA {
             var_versions: Default::default(),
             cfg: Default::default(),
         };
-        let entry_label = ssa.new_label("entry");
+        let entry_label = ssa.new_label("main");
         ssa.cfg.start_block(&entry_label);
         ssa
     }
@@ -192,7 +192,7 @@ impl SSA {
     }
 
     pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
-        self.instructions.push(Instr::Label("entry_0".to_string()));
+        self.instructions.push(Instr::Label("main".to_string()));
         for stmt in stmts {
             eprintln!("{:?}", stmt);
             self.stmt_to_ir(stmt);
@@ -213,9 +213,9 @@ impl SSA {
                 let header_label = self.new_label("loop_header");
                 let body_label = self.new_label("loop_body");
                 let exit_label = self.new_label("loop_exit");
-                // FIXME: This assumes the block before the loop is always entry_0
+                // FIXME: This assumes the block before the loop is always main
                 // In reality, we need the actual label of the block ending before this jump.
-                let pre_header_label = "entry_0".to_string();
+                let pre_header_label = "main".to_string();
 
                 // 1. Jump from pre-header to the loop header
                 self.emit(Instr::Jump(header_label.clone()));

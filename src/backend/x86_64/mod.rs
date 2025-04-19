@@ -74,7 +74,6 @@ impl Backend for Codegen {
         // .text
         self.add(".section .text");
         self.add(".globl main");
-        self.add("main:");
 
         // Emit code
         let resolve = |t: &String| -> String {

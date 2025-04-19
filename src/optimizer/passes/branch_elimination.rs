@@ -14,42 +14,26 @@ pub struct BranchElimination;
 impl Pass for BranchElimination {
     fn optimize(&self, instrs: Vec<Instr>) -> Vec<Instr> {
         let mut optimized_instrs = Vec::with_capacity(instrs.len());
-        // Simple map to track constant values encountered so far.
-        // Assumes variables are not reassigned (SSA-like form helps here).
-        // A proper constant propagation pass beforehand would be more robust.
         let mut constants: HashMap<String, i64> = HashMap::new();
 
         for instr in instrs {
             match instr {
                 Instr::Const(ref dest, val) => {
-                    // Record the constant value.
-                    constants.insert(dest.clone(), val);
-                    optimized_instrs.push(instr);
+                    constants.insert(dest.to_string(), val);
+                    optimized_instrs.push(instr.clone());
                 }
                 Instr::BranchIf(ref cond_var, ref then_lbl, ref else_lbl) => {
                     if let Some(&val) = constants.get(cond_var) {
-                        // Condition is a known constant.
-                        // We assume 0 is false, non-zero is true.
-                        if val != 0 {
-                            // Condition is true, jump to 'then' label.
-                            optimized_instrs.push(Instr::Jump(then_lbl.clone()));
-                        } else {
-                            // Condition is false, jump to 'else' label.
-                            optimized_instrs.push(Instr::Jump(else_lbl.clone()));
+                        match val != 0 {
+                            true => optimized_instrs.push(Instr::Jump(then_lbl.clone())),
+                            false => optimized_instrs.push(Instr::Jump(else_lbl.clone())),
                         }
-                        // The original BranchIf instruction is omitted.
                     } else {
-                        // Condition is not a known constant, keep the branch.
-                        optimized_instrs.push(instr);
+                        optimized_instrs.push(instr.clone());
                     }
                 }
-                // TODO: Handle instructions that might invalidate constants if not in SSA.
-                // For now, we assume constants remain valid once set.
-                // If an instruction like Assign(var, ...) exists and 'var' was in constants,
-                // it should ideally be removed from the constants map here.
                 _ => {
-                    // Keep other instructions as they are.
-                    optimized_instrs.push(instr);
+                    optimized_instrs.push(instr.clone());
                 }
             }
         }
@@ -113,7 +97,7 @@ mod tests {
         ];
 
         let pass = BranchElimination;
-        let optimized = pass.optimize(instrs);
+        let optimized = pass.optimize(instrs.clone());
 
         let expected = vec![
             Instr::Const("cond".to_string(), 0),
@@ -145,7 +129,7 @@ mod tests {
         ];
 
         let pass = BranchElimination;
-        let optimized = pass.optimize(instrs.clone()); // Clone because we compare with original
+        let optimized = pass.optimize(instrs.clone());
 
         // Expect no change
         assert_eq!(optimized, instrs);
