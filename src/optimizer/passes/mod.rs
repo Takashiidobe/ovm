@@ -5,6 +5,7 @@ pub mod global_value_numbering;
 pub mod move_coalescing;
 pub mod pass;
 pub mod strength_reduction;
+pub mod identity_elimination;
 
 use crate::optimizer::Instr;
 
@@ -15,6 +16,7 @@ pub use global_value_numbering::GlobalValueNumbering;
 pub use move_coalescing::MoveCoalescing;
 pub use pass::Pass;
 pub use strength_reduction::StrengthReduction;
+pub use identity_elimination::IdentityElimination;
 
 /// Available optimization passes
 #[derive(Debug, Clone, Copy)]
@@ -25,6 +27,7 @@ pub enum PassType {
     MoveCoalescing,
     BranchElimination,
     StrengthReduction,
+    IdentityElimination,
 }
 
 /// The main optimizer that runs optimization passes
@@ -38,6 +41,7 @@ impl Optimizer {
         let dce = DeadCodeElimination;
         let mc = MoveCoalescing;
         let sr = StrengthReduction;
+        let ie = IdentityElimination;
         let gvn = GlobalValueNumbering;
 
         let mut current_instrs = instrs;
@@ -48,6 +52,7 @@ impl Optimizer {
             // Run the core iterative passes in a logical order
             current_instrs = cf.optimize(current_instrs);
             current_instrs = mc.optimize(current_instrs);
+            current_instrs = ie.optimize(current_instrs);
             current_instrs = sr.optimize(current_instrs);
             current_instrs = be.optimize(current_instrs);
             current_instrs = dce.optimize(current_instrs);
@@ -93,6 +98,10 @@ impl Optimizer {
                 }
                 PassType::StrengthReduction => {
                     let pass = StrengthReduction;
+                    result = pass.optimize(result);
+                }
+                PassType::IdentityElimination => {
+                    let pass = IdentityElimination;
                     result = pass.optimize(result);
                 }
             }
