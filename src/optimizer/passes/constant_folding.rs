@@ -103,7 +103,10 @@ impl Pass for ConstantFolding {
                 }
                 Instr::FuncParam { name, .. } => {
                     constants.remove(&name);
-                    new_instrs.push(Instr::FuncParam { name: name.clone(), index: 0}); // Keep the instruction (index doesn't matter here)
+                    new_instrs.push(Instr::FuncParam {
+                        name: name.clone(),
+                        index: 0,
+                    }); // Keep the instruction (index doesn't matter here)
                 }
                 // Catch-all for instructions that don't define a simple constant
                 // or aren't handled above. These invalidate the destination.

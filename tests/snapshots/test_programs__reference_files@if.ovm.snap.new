@@ -1,0 +1,10 @@
+---
+source: tests/test_programs.rs
+assertion_line: 82
+expression: test_output
+input_file: tests/programs/if.ovm
+---
+status: 2
+stdout:
+  - "5"
+stderr: []

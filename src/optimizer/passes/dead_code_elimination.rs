@@ -113,7 +113,7 @@ impl Pass for DeadCodeElimination {
         let mut sorted_leaders: Vec<_> = leaders.iter().cloned().collect();
         sorted_leaders.sort();
         let mut instr_to_label = HashMap::new(); // instr_idx -> block_label
-        let mut current_labels: Vec<String> = vec![]; // Track labels for the current block
+        let current_labels: Vec<String> = vec![]; // Track labels for the current block
 
         for i in 0..sorted_leaders.len() {
             let start = sorted_leaders[i];
@@ -309,8 +309,7 @@ impl Pass for DeadCodeElimination {
                     if let Instr::Call { target, .. } = instr {
                         eprintln!(
                             "Found call to {} in reachable block {}, marking target as reachable.",
-                            target,
-                            current_label
+                            target, current_label
                         );
                         add_target(target); // Add call target
                     }
@@ -329,7 +328,7 @@ impl Pass for DeadCodeElimination {
             let block_label_opt = instr_to_label.get(&idx);
             // An instruction is reachable if its block is reachable.
             let is_instr_reachable =
-                block_label_opt.map_or(false, |lbl| reachable_labels.contains(lbl));
+                block_label_opt.is_some_and(|lbl| reachable_labels.contains(lbl));
 
             // Special case: Handle instruction 0 if it wasn't assigned a block label somehow
             let is_instr_reachable = is_instr_reachable
@@ -337,7 +336,7 @@ impl Pass for DeadCodeElimination {
                     && !instrs.is_empty()
                     && reachable_labels
                         .iter()
-                        .any(|l| blocks.get(l).map_or(false, |(s, _)| *s == 0)));
+                        .any(|l| blocks.get(l).is_some_and(|(s, _)| *s == 0)));
 
             if !is_instr_reachable {
                 eprintln!(
@@ -421,14 +420,14 @@ impl Pass for DeadCodeElimination {
                 let defining_instr = &instrs[*def_idx];
                 let def_block_label_opt = instr_to_label.get(def_idx);
                 let is_def_instr_reachable =
-                    def_block_label_opt.map_or(false, |lbl| reachable_labels.contains(lbl));
+                    def_block_label_opt.is_some_and(|lbl| reachable_labels.contains(lbl));
                 // Special case for index 0
                 let is_def_instr_reachable = is_def_instr_reachable
                     || (*def_idx == 0
                         && !instrs.is_empty()
                         && reachable_labels
                             .iter()
-                            .any(|l| blocks.get(l).map_or(false, |(s, _)| *s == 0)));
+                            .any(|l| blocks.get(l).is_some_and(|(s, _)| *s == 0)));
 
                 // Mark essential ONLY if the definition is reachable AND wasn't already essential
                 if is_def_instr_reachable && essential_instrs.insert(*def_idx) {

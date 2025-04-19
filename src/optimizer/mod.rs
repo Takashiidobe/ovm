@@ -19,10 +19,19 @@ pub enum Instr {
     Jump(String),
     Label(String),
     Phi(String, Vec<(String, String)>),
-    Call { target: String, args: Vec<String>, result: Option<String> },
-    Ret { value: Option<String> },
+    Call {
+        target: String,
+        args: Vec<String>,
+        result: Option<String>,
+    },
+    Ret {
+        value: Option<String>,
+    },
     Assign(String, String),
-    FuncParam { name: String, index: usize },
+    FuncParam {
+        name: String,
+        index: usize,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, Copy)]
@@ -202,7 +211,7 @@ impl SSA {
 
         // Process function definitions last
         for stmt in func_stmts {
-             eprintln!("Processing func stmt: {:?}", stmt);
+            eprintln!("Processing func stmt: {:?}", stmt);
             self.stmt_to_ir(stmt);
         }
 
@@ -309,19 +318,24 @@ impl SSA {
                 for var_name in outer_scope_vars.keys() {
                     // Use resolve_variable to find the current SSA name at the end of the body
                     if let Some(resolved_ssa_name) = self.resolve_variable(var_name) {
-                         resolved_back_edge_values.insert(var_name.clone(), resolved_ssa_name.clone());
+                        resolved_back_edge_values
+                            .insert(var_name.clone(), resolved_ssa_name.clone());
                     } else {
                         // This case might indicate an issue, or perhaps the variable
                         // was introduced *only* within the loop body, which phi nodes
                         // based on outer_scope_vars wouldn't handle anyway.
                         // For now, let's report it, but maybe a different handling is needed.
-                         eprintln!("Warning: Variable '{}' from outer scope not found at loop body end for Phi patching.", var_name);
-                         // If the variable was originally from outer scope, we might need
-                         // to use its initial phi value as fallback, but resolve_variable should find it
-                         // if it was ever assigned. Let's use the phi name itself as a placeholder for now.
-                         if let Some((phi_ssa_name, _, _)) = phi_data.get(var_name) {
-                            resolved_back_edge_values.insert(var_name.clone(), phi_ssa_name.clone());
-                         }
+                        eprintln!(
+                            "Warning: Variable '{}' from outer scope not found at loop body end for Phi patching.",
+                            var_name
+                        );
+                        // If the variable was originally from outer scope, we might need
+                        // to use its initial phi value as fallback, but resolve_variable should find it
+                        // if it was ever assigned. Let's use the phi name itself as a placeholder for now.
+                        if let Some((phi_ssa_name, _, _)) = phi_data.get(var_name) {
+                            resolved_back_edge_values
+                                .insert(var_name.clone(), phi_ssa_name.clone());
+                        }
                     }
                 }
 
@@ -549,7 +563,7 @@ impl SSA {
             Stmt::Function { name, params, body } => {
                 let func_name = name.lexeme.clone();
                 // Use the original function name as the label directly
-                let func_label = func_name.clone(); 
+                let func_label = func_name.clone();
 
                 // TODO: Store function IR separately. For now, just emit inline.
                 self.emit(Instr::Label(func_label.clone()));
@@ -560,10 +574,13 @@ impl SSA {
                     // In a real implementation, these would be linked to the Call instruction's arguments
                     for (i, param) in params.iter().enumerate() {
                         let param_temp = ssa.new_temp(); // Placeholder for argument value
-                        ssa.emit(Instr::FuncParam { name: param_temp.clone(), index: i });
+                        ssa.emit(Instr::FuncParam {
+                            name: param_temp.clone(),
+                            index: i,
+                        });
                         ssa.assign_variable(&param.lexeme, &param_temp);
                         // We might need an 'Arg' instruction later to represent parameters formally
-                        // ssa.emit(Instr::Arg { index: i, dest: param_temp }); 
+                        // ssa.emit(Instr::Arg { index: i, dest: param_temp });
                     }
 
                     // Generate IR for the function body
@@ -575,7 +592,7 @@ impl SSA {
                     // Check if the last instruction emitted was a Ret
                     // Note: This check is basic and might not cover all control flow paths.
                     if !matches!(ssa.instructions.last(), Some(Instr::Ret { .. })) {
-                         ssa.emit(Instr::Ret { value: None });
+                        ssa.emit(Instr::Ret { value: None });
                     }
                 });
                 // Function declaration itself doesn't produce a value in the current flow
@@ -583,7 +600,9 @@ impl SSA {
             }
             Stmt::Return { keyword: _, value } => {
                 let ret_val_temp = value.as_ref().map(|expr| self.expr_to_ir(expr));
-                self.emit(Instr::Ret { value: ret_val_temp });
+                self.emit(Instr::Ret {
+                    value: ret_val_temp,
+                });
                 self.new_temp() // Return statement doesn't produce a value in the expression sense
             }
             Stmt::Var { name, initializer } => {
@@ -680,16 +699,24 @@ impl SSA {
                 // The "result" of an assignment expression is the value assigned.
                 rhs_temp
             }
-            Expr::Call { callee, paren: _, arguments } => {
-                 // Evaluate the callee expression. For now, assume it resolves to a variable
-                 // which holds the function name (or is the function name itself).
-                 let target_name = match callee.as_ref() {
-                     Expr::Variable { name } => name.lexeme.clone(), // Simple case: direct function name
-                     _ => panic!("Unsupported callee expression: {:?}", callee),
-                 };
+            Expr::Call {
+                callee,
+                paren: _,
+                arguments,
+            } => {
+                // Evaluate the callee expression. For now, assume it resolves to a variable
+                // which holds the function name (or is the function name itself).
+                let target_name = match callee.as_ref() {
+                    Expr::Variable { name } => name.lexeme.clone(), // Simple case: direct function name
+                    _ => panic!("Unsupported callee expression: {:?}", callee),
+                };
                 let arg_temps = arguments.iter().map(|arg| self.expr_to_ir(arg)).collect();
                 let result_temp = self.new_temp(); // Assume calls can return a value
-                self.emit(Instr::Call { target: target_name, args: arg_temps, result: Some(result_temp.clone()) });
+                self.emit(Instr::Call {
+                    target: target_name,
+                    args: arg_temps,
+                    result: Some(result_temp.clone()),
+                });
                 result_temp
             }
             e => panic!("Unsupported expr: {e:?}"),

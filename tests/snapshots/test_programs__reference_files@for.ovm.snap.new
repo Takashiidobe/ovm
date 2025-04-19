@@ -1,0 +1,21 @@
+---
+source: tests/test_programs.rs
+assertion_line: 82
+expression: test_output
+input_file: tests/programs/for.ovm
+---
+status: 3
+stdout:
+  - "10"
+  - "0"
+  - "1"
+  - "2"
+  - "3"
+  - "4"
+  - "5"
+  - "6"
+  - "7"
+  - "8"
+  - "9"
+  - "20"
+stderr: []

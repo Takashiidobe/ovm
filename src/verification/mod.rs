@@ -40,68 +40,68 @@ impl<'a> Vm<'a> {
 
             let cycles = match instr {
                 Instr::Const(dest, val) => {
-                                self.variables.insert(dest.clone(), *val);
-                                1
-                            }
+                    self.variables.insert(dest.clone(), *val);
+                    1
+                }
                 Instr::BinOp(dest, left, op, right) => {
-                                let lval = self.get_var(left);
-                                let rval = self.get_var(right);
-                                let result = match op {
-                                    Op::Add => lval + rval,
-                                    Op::Sub => lval - rval,
-                                    Op::Mul => lval * rval,
-                                    Op::Div => {
-                                        if rval == 0 {
-                                            panic!("Division by zero");
-                                        }
-                                        lval / rval
-                                    }
-                                    Op::Shl => lval << rval,
-                                    Op::Shr => lval >> rval,
-                                    Op::BitAnd | Op::And => lval & rval, // Treat logical and bitwise AND similarly for i64
-                                    Op::BitOr | Op::Or => lval | rval, // Treat logical and bitwise OR similarly for i64
-                                    Op::Mod => lval % rval,
-                                };
-                                self.variables.insert(dest.clone(), result);
-                                1 // Cycle cost
+                    let lval = self.get_var(left);
+                    let rval = self.get_var(right);
+                    let result = match op {
+                        Op::Add => lval + rval,
+                        Op::Sub => lval - rval,
+                        Op::Mul => lval * rval,
+                        Op::Div => {
+                            if rval == 0 {
+                                panic!("Division by zero");
                             }
+                            lval / rval
+                        }
+                        Op::Shl => lval << rval,
+                        Op::Shr => lval >> rval,
+                        Op::BitAnd | Op::And => lval & rval, // Treat logical and bitwise AND similarly for i64
+                        Op::BitOr | Op::Or => lval | rval, // Treat logical and bitwise OR similarly for i64
+                        Op::Mod => lval % rval,
+                    };
+                    self.variables.insert(dest.clone(), result);
+                    1 // Cycle cost
+                }
                 Instr::Print(var) => {
-                                self.get_var(var);
-                                10 // Cycle cost (I/O)
-                            }
+                    self.get_var(var);
+                    10 // Cycle cost (I/O)
+                }
                 Instr::Cmp(dest, left, cmp_op, right) => {
-                                let lval = self.get_var(left);
-                                let rval = self.get_var(right);
-                                let result = match cmp_op {
-                                    CmpOp::Eq => lval == rval,
-                                    CmpOp::Neq => lval != rval,
-                                    CmpOp::Lt => lval < rval,
-                                    CmpOp::Lte => lval <= rval,
-                                    CmpOp::Gt => lval > rval,
-                                    CmpOp::Gte => lval >= rval,
-                                };
-                                self.variables.insert(dest.clone(), result as i64); // Store bool as 0 or 1
-                                1 // Cycle cost
-                            }
+                    let lval = self.get_var(left);
+                    let rval = self.get_var(right);
+                    let result = match cmp_op {
+                        CmpOp::Eq => lval == rval,
+                        CmpOp::Neq => lval != rval,
+                        CmpOp::Lt => lval < rval,
+                        CmpOp::Lte => lval <= rval,
+                        CmpOp::Gt => lval > rval,
+                        CmpOp::Gte => lval >= rval,
+                    };
+                    self.variables.insert(dest.clone(), result as i64); // Store bool as 0 or 1
+                    1 // Cycle cost
+                }
                 Instr::BranchIf(cond, then_label, else_label) => {
-                                let cond_val = self.get_var(cond);
-                                let target_label = if cond_val != 0 {
-                                    then_label
-                                } else {
-                                    else_label
-                                };
-                                next_pc = *self.labels.get(target_label).unwrap_or_else(|| {
-                                    panic!("Branch target label '{}' not found", target_label)
-                                });
-                                3 // Cycle cost (branch)
-                            }
+                    let cond_val = self.get_var(cond);
+                    let target_label = if cond_val != 0 {
+                        then_label
+                    } else {
+                        else_label
+                    };
+                    next_pc = *self.labels.get(target_label).unwrap_or_else(|| {
+                        panic!("Branch target label '{}' not found", target_label)
+                    });
+                    3 // Cycle cost (branch)
+                }
                 Instr::Jump(label) => {
-                                next_pc = *self
-                                    .labels
-                                    .get(label)
-                                    .unwrap_or_else(|| panic!("Jump target label '{}' not found", label));
-                                2 // Cycle cost (jump)
-                            }
+                    next_pc = *self
+                        .labels
+                        .get(label)
+                        .unwrap_or_else(|| panic!("Jump target label '{}' not found", label));
+                    2 // Cycle cost (jump)
+                }
                 Instr::Label(_) => 0,
                 Instr::FuncParam { name, index: _ } => {
                     // Simulate receiving the parameter, initialize to 0 for verification
@@ -109,26 +109,26 @@ impl<'a> Vm<'a> {
                     0 // Cycle cost (assume negligible for param setup)
                 }
                 Instr::Phi(dest, sources) => {
-                                // Phi nodes are complex in dynamic simulation without knowing the predecessor block.
-                                // A simple VM often assumes Phi nodes are lowered/resolved beforehand.
-                                // Here, we'll just assign a cost and maybe take the first source for simplicity,
-                                // or panic if Phi nodes are unexpected at this stage.
-                                // Let's assign a cost and copy the value from the first source as a placeholder.
-                                if let Some((_label, src_var)) = sources.first() {
-                                    let val = self.get_var(src_var);
-                                    self.variables.insert(dest.clone(), val);
-                                } else {
-                                    // Handle case with no sources if necessary, maybe default to 0?
-                                    // self.variables.insert(dest.clone(), 0);
-                                    println!("Warning: Phi node '{}' has no sources.", dest);
-                                }
-                                1 // Cycle cost (placeholder)
-                            }
+                    // Phi nodes are complex in dynamic simulation without knowing the predecessor block.
+                    // A simple VM often assumes Phi nodes are lowered/resolved beforehand.
+                    // Here, we'll just assign a cost and maybe take the first source for simplicity,
+                    // or panic if Phi nodes are unexpected at this stage.
+                    // Let's assign a cost and copy the value from the first source as a placeholder.
+                    if let Some((_label, src_var)) = sources.first() {
+                        let val = self.get_var(src_var);
+                        self.variables.insert(dest.clone(), val);
+                    } else {
+                        // Handle case with no sources if necessary, maybe default to 0?
+                        // self.variables.insert(dest.clone(), 0);
+                        println!("Warning: Phi node '{}' has no sources.", dest);
+                    }
+                    1 // Cycle cost (placeholder)
+                }
                 Instr::Assign(dest, src) => {
-                                let val = self.get_var(src);
-                                self.variables.insert(dest.clone(), val);
-                                1 // Cycle cost
-                            }
+                    let val = self.get_var(src);
+                    self.variables.insert(dest.clone(), val);
+                    1 // Cycle cost
+                }
                 Instr::Call { .. } => todo!(),
                 Instr::Ret { .. } => todo!(),
             };

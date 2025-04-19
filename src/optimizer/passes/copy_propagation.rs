@@ -97,7 +97,9 @@ impl Pass for CopyPropagation {
                     // If any other variable was a copy *of* 'name', invalidate that.
                     copies.retain(|_, source| source != name);
                 }
-                Instr::Call { result: Some(dest), .. } => {
+                Instr::Call {
+                    result: Some(dest), ..
+                } => {
                     copies.remove(dest);
                     copies.retain(|_, source| source != dest);
                 }

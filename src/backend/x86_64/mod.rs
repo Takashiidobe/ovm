@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::optimizer::{registers::Location, CmpOp, Instr, Op};
 
@@ -13,7 +13,7 @@ pub struct Codegen {
 
 // Helper struct for basic block info during preprocessing
 #[derive(Debug, Clone)]
-struct BlockInfo {
+pub struct BlockInfo {
     label: String,
     start_idx: usize,
     end_idx: usize, // Index of the last instruction (usually Jump or BranchIf)
@@ -42,7 +42,9 @@ impl Backend for Codegen {
                 current_block_label_for_phi = label.clone();
             }
         } else {
-            eprintln!("Warning: No labels found in processed IR for phi location mapping, assuming 'main'.");
+            eprintln!(
+                "Warning: No labels found in processed IR for phi location mapping, assuming 'main'."
+            );
         }
         for instr in &processed_instrs {
             if let Instr::Label(label) = instr {
@@ -74,18 +76,22 @@ impl Backend for Codegen {
                         })
                     {
                         eprintln!(
-                             "Phi Prep (Pass 2): For edge ('{}' -> '{}'), found logical '{}'. Adding move '{}' = '{}'",
-                             actual_pred_label, phi_block_label, logical_pred_label, phi_dest_ssa, pred_val_ssa
-                         );
+                            "Phi Prep (Pass 2): For edge ('{}' -> '{}'), found logical '{}'. Adding move '{}' = '{}'",
+                            actual_pred_label,
+                            phi_block_label,
+                            logical_pred_label,
+                            phi_dest_ssa,
+                            pred_val_ssa
+                        );
                         self.phi_prep_moves
                             .entry((actual_pred_label.clone(), phi_block_label.clone()))
                             .or_default()
                             .push((phi_dest_ssa.clone(), pred_val_ssa.clone()));
                     } else {
                         eprintln!(
-                             "Warning: Could not find actual predecessor for logical pred '{}' targeting block '{}' in edge_to_logical_pred map.",
-                             logical_pred_label, phi_block_label
-                         );
+                            "Warning: Could not find actual predecessor for logical pred '{}' targeting block '{}' in edge_to_logical_pred map.",
+                            logical_pred_label, phi_block_label
+                        );
                     }
                 }
             } else {
@@ -256,15 +262,17 @@ impl Backend for Codegen {
                     self.add(format!("{}:", label));
                     self.current_block = Some(label.clone());
                 }
-                Instr::Phi(dest, preds) => {
-                     // Phi nodes are handled by inserting moves at the end of predecessor blocks.
-                     // No direct code generation needed here for the Phi instruction itself.
-                    eprintln!("Ignoring Phi directly: {} = {:?}", dest, preds);
-                }
-                 Instr::Call { target, args, result } => {
+                // Phi nodes are handled by inserting moves at the end of predecessor blocks.
+                // No direct code generation needed here for the Phi instruction itself.
+                Instr::Phi(_, _) => {}
+                Instr::Call {
+                    target,
+                    args,
+                    result,
+                } => {
                     // TODO: Handle > 6 arguments (stack passing)
                     // TODO: Handle floating point arguments
-                    let arg_regs = vec!["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+                    let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
                     // Ensure caller-saved registers are saved if needed (requires liveness analysis)
                     // For now, we assume the register allocator handles this or we accept clobbering.
@@ -294,19 +302,19 @@ impl Backend for Codegen {
                     if let Some(val_ssa) = value {
                         let val_loc = resolve(val_ssa);
                         self.move_memory(&val_loc, "%rax"); // Move return value to %rax
+                    } else {
+                        self.add("xor %rax, %rax");
                     }
-                    // TODO: Add function epilogue (restore stack, saved registers)
                     self.add("ret");
                 }
                 Instr::Assign(dest, src) => {
                     let dest_loc = resolve(dest);
                     let src_loc = resolve(src);
-                     self.move_memory(&src_loc, &dest_loc);
+                    self.move_memory(&src_loc, &dest_loc);
                 }
-                Instr::FuncParam { .. } => {
-                    // No assembly generated for FuncParam itself.
-                    // Its effect is handled by the register allocator pre-coloring.
-                }
+                // No assembly generated for FuncParam itself.
+                // This is handled by the register allocator.
+                Instr::FuncParam { .. } => {}
             }
         }
 
@@ -329,10 +337,7 @@ impl Codegen {
                 }
             })
             .collect::<Vec<_>>()
-            .join(
-                "
-",
-            )
+            .join("\n")
     }
 
     fn move_memory(&mut self, src: &str, dest: &str) {
@@ -368,7 +373,6 @@ impl Codegen {
         let mut blocks = BTreeMap::<String, BlockInfo>::new();
         let mut label_to_idx = HashMap::<String, usize>::new();
         let mut current_label = None;
-        let mut current_start_idx = 0;
 
         for (idx, instr) in original_instrs.iter().enumerate() {
             if let Instr::Label(label) = instr {
@@ -389,7 +393,6 @@ impl Codegen {
                     },
                 );
                 current_label = Some(label_str);
-                current_start_idx = idx;
             }
         }
         if let Some(last_label) = current_label {
@@ -411,7 +414,8 @@ impl Codegen {
         }
 
         // Collect block start indices and labels for fallthrough check
-        let block_starts: HashMap<usize, String> = blocks.iter()
+        let block_starts: HashMap<usize, String> = blocks
+            .iter()
             .map(|(lbl, info)| (info.start_idx, lbl.clone()))
             .collect();
 
@@ -437,12 +441,11 @@ impl Codegen {
                         // Fallthrough ONLY if not Jump/Branch/Ret/Phi
                         if let Some(next_instr) = original_instrs.get(info.end_idx + 1) {
                             if let Instr::Label(next_label) = next_instr {
-                                // Check if a block with this label starts at the next index
-                                if block_starts.get(&(info.end_idx + 1)).map_or(false, |lbl| lbl == next_label) {
-                                     info.successors.push(next_label.clone());
-                                     // Mark that an explicit jump needs to be inserted
-                                     fallthrough_jumps_to_insert
-                                         .insert(label.clone(), next_label.clone());
+                                if block_starts.get(&(info.end_idx + 1)) == Some(next_label) {
+                                    info.successors.push(next_label.clone());
+                                    // Mark that an explicit jump needs to be inserted
+                                    fallthrough_jumps_to_insert
+                                        .insert(label.clone(), next_label.clone());
                                 }
                             }
                         }
@@ -504,7 +507,7 @@ impl Codegen {
         }
 
         // Recalculate successors for final_blocks
-        for (label, info) in final_blocks.iter_mut() {
+        for (_, info) in final_blocks.iter_mut() {
             if info.end_idx >= modified_instrs.len() {
                 continue;
             }
@@ -526,7 +529,7 @@ impl Codegen {
 
         // --- Pass 3: Build the edge_to_logical_pred map (using original_instrs for Phi defs, final_blocks for CFG) ---
         let mut edge_to_logical_pred = HashMap::<(String, String), String>::new();
-        for (phi_block_label, _) in &final_blocks {
+        for phi_block_label in final_blocks.keys() {
             // Find all actual predecessors for this phi_block using final_blocks CFG
             let actual_predecessors_set: HashSet<String> = final_blocks
                 .iter()
@@ -591,11 +594,18 @@ impl Codegen {
                                             logical_pred.clone(),
                                         );
                                     } else {
-                                        eprintln!("  Error: Fallback edge mapping failed - ran out of actual preds for logical '{}'.", logical_pred);
+                                        eprintln!(
+                                            "  Error: Fallback edge mapping failed - ran out of actual preds for logical '{}'.",
+                                            logical_pred
+                                        );
                                     }
                                 }
                             } else {
-                                eprintln!("  Error: Could not map all edges. Count mismatch ({} logical vs {} actual remaining).", remaining_logical.len(), remaining_actual.len());
+                                eprintln!(
+                                    "  Error: Could not map all edges. Count mismatch ({} logical vs {} actual remaining).",
+                                    remaining_logical.len(),
+                                    remaining_actual.len()
+                                );
                             }
                         }
                         // End mapping logic

@@ -1,0 +1,19 @@
+fun id(x) {
+	return x;
+}
+
+fun puts(x) {
+	print x;
+}
+
+fun fib(x) {
+	if (x <= 1) {
+		return 1;
+	} else {
+		return fib(x - 1) + fib(x - 2);
+	}
+}
+
+print id(10);
+puts(id(10));
+fib(10);
