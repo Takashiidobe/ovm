@@ -63,9 +63,7 @@ impl<'a> Vm<'a> {
                     1 // Cycle cost
                 }
                 Instr::Print(var) => {
-                    let val = self.get_var(var);
-                    // Optional: Add a flag to actually print
-                    // println!("{}", val);
+                    self.get_var(var);
                     10 // Cycle cost (I/O)
                 }
                 Instr::Cmp(dest, left, cmp_op, right) => {
@@ -135,9 +133,6 @@ impl<'a> Vm<'a> {
 
 /// Calculates the estimated cycle count by simulating the execution of instructions.
 pub fn calculate_cycles(instrs: &[Instr]) -> u64 {
-    if instrs.is_empty() {
-        return 0;
-    }
     let mut vm = Vm::new(instrs);
     vm.run()
 }

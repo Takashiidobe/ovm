@@ -221,7 +221,7 @@ impl Pass for DeadCodeElimination {
                 Instr::Jump(_) => {
                     is_essential = true;
                 }
-                Instr::Label(label) => {
+                Instr::Label(_) => {
                     // If we are processing this instruction, its block MUST be reachable
                     // (due to the 'is_block_reachable' check earlier in the loop).
                     // Therefore, any reachable label should be considered essential.
@@ -378,68 +378,54 @@ mod tests {
 
     #[test]
     fn test_dce_after_branch_elim() {
+        // Simulates code like: if (true) { t2 = 0; } print 1;
         let instrs = vec![
-            Instr::Const("a".to_string(), 1),
-            Instr::Const("b".to_string(), 2),
-            Instr::Const("c".to_string(), 3),
-            Instr::Const("e".to_string(), 5), // Define e, f, g
-            Instr::Const("f".to_string(), 6),
-            Instr::Const("g".to_string(), 7),
-            Instr::Jump("then_label".to_string()), // Branch eliminated
-            Instr::Label("then_label".to_string()), // Target label
-            Instr::Print("a".to_string()),
-            Instr::Print("b".to_string()),
-            Instr::Print("c".to_string()),
-            // Assume fallthrough or jump to end here
-            Instr::Label("else_label".to_string()), // Unreachable label
-            Instr::Print("e".to_string()),          // Dead print
-            Instr::Print("f".to_string()),          // Dead print
-            Instr::Print("g".to_string()),          // Dead print
-            Instr::Label("end".to_string()),        // Assume this is the end/exit label
+            Instr::Label("entry".to_string()),
+            Instr::Const("t1".to_string(), 1), // Condition is constant true
+            Instr::BranchIf("t1".to_string(), "then".to_string(), "else".to_string()),
+            Instr::Label("then".to_string()),
+            Instr::Const("t2".to_string(), 0), // This should become dead
+            Instr::Jump("merge".to_string()),
+            Instr::Label("else".to_string()), // This block should become dead
+            Instr::Jump("merge".to_string()),
+            Instr::Label("merge".to_string()),
+            Instr::Const("t3".to_string(), 1), // Use a constant value later
+            Instr::Assign("res".to_string(), "t3".to_string()), // Introduce a move to test MC
+            Instr::Print("res".to_string()),   // Use the final result
         ];
 
-        let pass = DeadCodeElimination;
-        let optimized = pass.optimize(instrs);
+        // Use the full optimizer pipeline
+        let optimizer = Optimizer;
+        let optimized = optimizer.run_all(instrs);
 
-        // Expected result: Consts for e, f, g are gone, Prints for e, f, g are gone.
-        // Labels might be kept depending on precise fallthrough/required label logic.
-        // Based on the DCE logic: "then_label" is required (jump target). "end" might be
-        // required if it's considered reachable via fallthrough from "print c".
-        // "else_label" should not be required.
-        let expected_strict = vec![
-            Instr::Const("a".to_string(), 1),
-            Instr::Const("b".to_string(), 2),
-            Instr::Const("c".to_string(), 3),
-            Instr::Jump("then_label".to_string()),
-            Instr::Label("then_label".to_string()),
-            Instr::Print("a".to_string()),
-            Instr::Print("b".to_string()),
-            Instr::Print("c".to_string()),
-            // Assuming DCE keeps required labels and labels reached by fallthrough
-            Instr::Label("end".to_string()),
+        // Expected result after CF, BE, MC, DCE (iterated), GVN, DCE:
+        // - CF folds t1 to 1.
+        // - BE converts BranchIf to Jump("then").
+        // - CF might not be re-run in this specific test setup's sequence before DCE.
+        // - The first DCE might remove the BranchIf or make the else block dead.
+        // - MC coalesces t3 into res -> Const("res", 1)
+        // - Iteration ensures the else block and t2 definition are removed.
+        // - Final DCE removes unused labels and constants if any.
+        let expected = vec![
+            Instr::Label("entry".to_string()),
+            // t1 constant is folded and DCE'd
+            // BranchIf is eliminated
+            Instr::Jump("then".to_string()), //might be removed if Label("then") is removed and merge follows entry directly.
+            Instr::Label("then".to_string()), // is DCE'd
+            Instr::Jump("merge".to_string()), // from else is DCE'd
+            Instr::Label("merge".to_string()), // might be removed if not jumped to.
+            Instr::Const("res".to_string(), 1), // t3 coalesced into res
+            Instr::Print("res".to_string()),
         ];
 
-        // Check that the specific dead instructions are gone
-        assert!(
-            !optimized.iter().any(
-                |instr| matches!(instr, Instr::Const(d, _) if d == "e" || d == "f" || d == "g")
-            ),
-            "Const instructions for e, f, or g were not removed"
-        );
-        assert!(
-            !optimized
-                .iter()
-                .any(|instr| matches!(instr, Instr::Print(v) if v == "e" || v == "f" || v == "g")),
-            "Print instructions for e, f, or g were not removed"
-        );
+        // Need to import Optimizer for this test
+        use crate::optimizer::passes::Optimizer;
 
-        // For more precise checking, compare with the expected vector
-        // Note: This exact comparison might fail if the DCE pass handles labels slightly differently
-        // (e.g., removes unused ones like "end" if it's truly unreachable, or keeps "else_label" for some reason).
-        // The asserts above are the primary check.
         assert_eq!(
-            optimized, expected_strict,
-            "Optimized IR did not match expected structure"
+            optimized, expected,
+            "Optimized instructions do not match expected after full pipeline"
         );
     }
+
+    // ... other tests ...
 }

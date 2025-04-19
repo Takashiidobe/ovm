@@ -28,7 +28,7 @@ pub enum PassType {
 pub struct Optimizer;
 
 impl Optimizer {
-    /// Run all available optimization passes in order
+    /// Run all available optimization passes in order, iterating core passes until fixed point
     pub fn run_all(&self, instrs: Vec<Instr>) -> Vec<Instr> {
         let cf = ConstantFolding;
         let be = BranchElimination;
@@ -36,12 +36,24 @@ impl Optimizer {
         let mc = MoveCoalescing;
         let gvn = GlobalValueNumbering;
 
-        // Run passes in a logical order: CF -> BE -> MC -> DCE -> GVN -> DCE
         let mut current_instrs = instrs;
-        current_instrs = cf.optimize(current_instrs);
-        current_instrs = be.optimize(current_instrs);
-        current_instrs = mc.optimize(current_instrs);
-        current_instrs = dce.optimize(current_instrs);
+
+        loop {
+            let before_instrs = current_instrs.clone(); // Clone to compare later
+
+            // Run the core iterative passes
+            current_instrs = cf.optimize(current_instrs);
+            current_instrs = be.optimize(current_instrs);
+            current_instrs = mc.optimize(current_instrs);
+            current_instrs = dce.optimize(current_instrs);
+
+            // Check if the instructions changed
+            if current_instrs == before_instrs {
+                break; // Fixed point reached
+            }
+        }
+
+        // Run GVN and a final DCE pass after the loop stabilizes
         current_instrs = gvn.optimize(current_instrs);
         current_instrs = dce.optimize(current_instrs);
 
