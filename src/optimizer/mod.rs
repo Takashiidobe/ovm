@@ -43,6 +43,8 @@ pub enum Op {
     BitOr,
     And,
     Or,
+    LShift,
+    RShift,
 }
 
 #[derive(Default, Debug, PartialEq, Clone)]
@@ -547,6 +549,8 @@ impl SSA {
                     TokenType::Minus => self.emit(Instr::BinOp(temp.clone(), l, Op::Sub, r)),
                     TokenType::Star => self.emit(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
                     TokenType::Slash => self.emit(Instr::BinOp(temp.clone(), l, Op::Div, r)),
+                    TokenType::LeftShift=> self.emit(Instr::BinOp(temp.clone(), l, Op::LShift, r)),
+                    TokenType::RightShift => self.emit(Instr::BinOp(temp.clone(), l, Op::RShift, r)),
                     TokenType::EqualEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
                     TokenType::BangEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
                     TokenType::LessEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),

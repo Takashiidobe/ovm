@@ -20,6 +20,8 @@ pub enum TokenType {
     // One or two character tokens
     BitOr,
     BitAnd,
+    LeftShift,
+    RightShift,
     Bang,
     BangEqual,
     Equal,
@@ -118,6 +120,8 @@ impl fmt::Display for Token {
             | (TokenType::Float, None) => panic!("Invalid token"),
             (TokenType::BitOr, _) => "|".to_string(),
             (TokenType::BitAnd, _) => "&".to_string(),
+            (TokenType::LeftShift, _) => "<<".to_string(),
+            (TokenType::RightShift, _) => ">>".to_string(),
         };
 
         f.write_str(&val)

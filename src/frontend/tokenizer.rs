@@ -67,8 +67,24 @@ impl Tokenizer {
             '*' => self.add_token(TokenType::Star, None),
             '!' => self.add_relational_token(TokenType::Bang, TokenType::BangEqual),
             '=' => self.add_relational_token(TokenType::Equal, TokenType::EqualEqual),
-            '<' => self.add_relational_token(TokenType::Less, TokenType::LessEqual),
-            '>' => self.add_relational_token(TokenType::Greater, TokenType::GreaterEqual),
+            '<' => {
+                if self.r#match('<') {
+                    self.add_token(TokenType::LeftShift, None);
+                } else if self.r#match('=') {
+                    self.add_token(TokenType::LessEqual, None);
+                } else {
+                    self.add_token(TokenType::Less, None);
+                }
+            }
+            '>' => {
+                if self.r#match('>') {
+                    self.add_token(TokenType::RightShift, None);
+                } else if self.r#match('=') {
+                    self.add_token(TokenType::GreaterEqual, None);
+                } else {
+                    self.add_token(TokenType::Greater, None);
+                }
+            }
             '&' => self.add_token(TokenType::BitAnd, None),
             '|' => self.add_token(TokenType::BitOr, None),
             '/' => {

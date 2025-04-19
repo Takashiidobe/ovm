@@ -348,7 +348,7 @@ impl Parser {
     }
 
     fn comparison(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.term()?;
+        let mut expr = self.shift()?;
 
         while self.r#match(&[
             TokenType::Greater,
@@ -356,6 +356,22 @@ impl Parser {
             TokenType::Less,
             TokenType::LessEqual,
         ]) {
+            let operator = self.previous();
+            let right = self.shift()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn shift(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.term()?;
+
+        while self.r#match(&[TokenType::LeftShift, TokenType::RightShift]) {
             let operator = self.previous();
             let right = self.term()?;
             expr = Expr::Binary {

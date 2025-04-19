@@ -432,7 +432,7 @@ impl ExprKey {
                 }
             }
             // Non-commutative operations: keep original order.
-            Op::Sub | Op::Div => ExprKey::BinOp(op, vn1, vn2),
+            Op::Sub | Op::Div | Op::LShift | Op::RShift => ExprKey::BinOp(op, vn1, vn2),
         }
     }
 }
