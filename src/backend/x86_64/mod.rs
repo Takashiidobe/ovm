@@ -90,7 +90,7 @@ impl Backend for Codegen {
 
         // .data
         self.add(".section .data");
-        self.add("fmt: .string \"%ld\\n\"");
+        self.add("fmt: .string \"%ld\"");
 
         // .bss for spilled temps
         self.add(".section .bss");
@@ -101,6 +101,7 @@ impl Backend for Codegen {
         }
 
         // .text
+        // TODO: Separate functions properly. For now, all code goes into .text.
         self.add(".section .text");
         self.add(".globl main");
 
@@ -253,11 +254,65 @@ impl Backend for Codegen {
 
                     self.move_memory(&src, &dest);
                 }
+                Instr::Call { target, args, result } => {
+                    // TODO: Implement proper calling convention (stack args, caller/callee saved registers)
+                    let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
+                    // Move arguments into registers
+                    for (i, arg_temp) in args.iter().enumerate() {
+                        if i >= arg_regs.len() {
+                            eprintln!("Warning: More than 6 arguments not yet supported for call to {}", target);
+                            break;
+                        }
+                        let arg_loc = resolve(arg_temp);
+                        let reg = arg_regs[i];
+                        // Avoid memory-to-memory move if arg_loc is memory
+                        if arg_loc.contains("(%rip)") {
+                            self.add(format!("movq {}, %rax", arg_loc)); // Use rax as intermediate
+                            self.add(format!("movq %rax, {}", reg));
+                        } else {
+                            self.add(format!("movq {}, {}", arg_loc, reg));
+                        }
+                    }
+
+                    // Call the function
+                    // TODO: Need function label resolution/mangling
+                    self.add(format!("call {}", target));
+
+                    // Move result from %rax to destination temporary
+                    if let Some(result_temp) = result {
+                        let dest_loc = resolve(result_temp);
+                        self.add(format!("movq %rax, {}", dest_loc));
+                    }
+                }
+                Instr::Ret { value } => {
+                    if let Some(val_temp) = value {
+                        let val_loc = resolve(val_temp);
+                        // Ensure value is in %rax before returning
+                        if val_loc != "%rax" { // Optimization: don't move if already there
+                             if val_loc.contains("(%rip)") && "%rax".contains("(%rip)") {
+                                // Should not happen as %rax is not memory
+                                self.add(format!("movq {}, %r11", val_loc)); // Use r11 as temp
+                                self.add(format!("movq %r11, %rax"));
+                             } else {
+                                 self.add(format!("movq {}, %rax", val_loc));
+                             }
+                        }
+                    } else {
+                        // Default return 0 if no value specified (e.g., void function)
+                        self.add("movq $0, %rax");
+                    }
+                    self.add("ret");
+                }
             }
         }
 
-        self.add("movl $0, %eax");
-        self.add("ret");
+        // Add default exit for main if the last instruction wasn't already a return
+        // TODO: This is a bit simplistic, needs proper function end detection.
+        if !matches!(processed_instrs.last(), Some(Instr::Ret { .. })) {
+            self.add("movl $0, %eax");
+            self.add("ret");
+        }
 
         self.format_asm(&self.asm)
     }
@@ -278,7 +333,8 @@ impl Codegen {
                 }
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("
+")
     }
 
     fn move_memory(&mut self, src: &str, dest: &str) {
