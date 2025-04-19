@@ -1,0 +1,5 @@
+fun id(x) {
+  return x;
+}	
+
+print id(10);

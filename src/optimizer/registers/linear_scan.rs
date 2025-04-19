@@ -66,6 +66,24 @@ impl LinearScan {
                 defs.insert(dest.clone());
                 uses.insert(src.clone());
             }
+            // --- Additions for functions ---
+            Instr::Call { target: _, args, result } => {
+                // The result register (if any) is defined by the call.
+                if let Some(res_var) = result {
+                    defs.insert(res_var.clone());
+                }
+                // The arguments are used by the call.
+                for arg_var in args {
+                    uses.insert(arg_var.clone());
+                }
+            }
+            Instr::Ret { value } => {
+                // The return value (if any) is used by the ret instruction.
+                if let Some(ret_var) = value {
+                    uses.insert(ret_var.clone());
+                }
+            }
+            // --- End Additions ---
         }
         (defs, uses)
     }
@@ -84,8 +102,8 @@ impl RegisterAllocator for LinearScan {
 
         for (idx, instr) in instrs.iter().enumerate() {
             match instr {
-                Instr::Jump(_) | Instr::BranchIf(_, _, _) => {
-                    // Instruction *after* a jump/branch is a leader
+                Instr::Jump(_) | Instr::BranchIf(_, _, _) | Instr::Ret { .. } => { // Ret also ends a block
+                    // Instruction *after* a jump/branch/ret is a leader
                     if idx + 1 < instrs.len() {
                         leaders.insert(idx + 1);
                     }
@@ -107,6 +125,13 @@ impl RegisterAllocator for LinearScan {
                 // Ensure targets of jumps/branches are leaders
                 // Need to find jumps/branches *pointing* to this label
             }
+            // Also consider Call targets if they are labels within the same code unit
+            if let Instr::Call { target, .. } = instr {
+                 if let Some(target_idx) = label_map.get(target) {
+                     // Assuming calls can target labels defined within this IR sequence
+                     leaders.insert(*target_idx);
+                 }
+            }
         }
         // Second pass to add actual jump targets to leaders
         for instr in instrs.iter() {
@@ -118,6 +143,7 @@ impl RegisterAllocator for LinearScan {
                         eprintln!("Warning: Jump/Branch target label '{}' not found.", target);
                     }
                 }
+                // Call targets added in previous loop
                 _ => {}
             }
         }
@@ -146,7 +172,8 @@ impl RegisterAllocator for LinearScan {
                 // but a label exists
                 label_map.entry(label.clone()).or_insert(start);
             } else if !matches!(instrs[start], Instr::Label(_)) {
-                label_map.insert(label.clone(), start);
+                 // Ensure synthetic labels are also in the map
+                 label_map.entry(label.clone()).or_insert(start);
             }
 
             // Populate instr_block_labels mapping
@@ -169,7 +196,13 @@ impl RegisterAllocator for LinearScan {
         // --- 2. Build CFG (Predecessors/Successors) ---
         let block_labels_list: Vec<_> = blocks.keys().cloned().collect();
         for label in &block_labels_list {
-            let block = blocks.get(label).unwrap(); // Clone block temporarily to satisfy borrow checker
+             let block_opt = blocks.get(label); // Get immutable reference first
+             if block_opt.is_none() {
+                 eprintln!("Warning: Block '{}' not found during CFG construction.", label);
+                 continue;
+             }
+             let block = block_opt.unwrap();
+
 
             let last_instr_idx = if block.range.is_empty() {
                 continue;
@@ -191,7 +224,10 @@ impl RegisterAllocator for LinearScan {
                     successors.push(then_target.clone());
                     successors.push(else_target.clone());
                 }
-                // If the last instruction is not a jump/branch,
+                Instr::Ret { .. } => {
+                    // Return instruction has no successors within this function's CFG
+                }
+                // If the last instruction is not a jump/branch/ret,
                 // the successor is the next block in sequence (if any)
                 _ => {
                     // Find the block that starts immediately after this one
@@ -220,11 +256,13 @@ impl RegisterAllocator for LinearScan {
                                         if let Some(actual_next_label) =
                                             instr_block_labels.get(&next_leader_start)
                                         {
-                                            successors.push(actual_next_label.clone());
-                                            eprintln!(
-                                                "  -> Found next leader block: {}",
-                                                actual_next_label
-                                            );
+                                             if blocks.contains_key(actual_next_label) { // Check if block exists
+                                                 successors.push(actual_next_label.clone());
+                                                 eprintln!(
+                                                     "  -> Found next leader block: {}",
+                                                     actual_next_label
+                                                 );
+                                             }
                                         }
                                     }
                                 }
@@ -240,11 +278,12 @@ impl RegisterAllocator for LinearScan {
             }
 
             // Update successors for the current block and predecessors for the target blocks
+            // Need to re-borrow mutably here
             if let Some(current_block_mut) = blocks.get_mut(label) {
-                current_block_mut.succs = successors.clone();
+                 current_block_mut.succs = successors.clone(); // Clone successors list here
             } else {
-                eprintln!("Warning: Block '{}' disappeared during CFG update.", label);
-                continue;
+                 eprintln!("Warning: Block '{}' disappeared during CFG update (successors).", label);
+                 continue;
             }
 
             for succ_label in successors {
@@ -288,12 +327,16 @@ impl RegisterAllocator for LinearScan {
             // Iterate backwards for faster convergence (optional but common)
             let block_labels_rev: Vec<_> = blocks.keys().cloned().rev().collect();
             for label in block_labels_rev {
-                // Clone necessary info before mutable borrow
-                let block_succs = blocks.get(label.as_str()).unwrap().succs.clone();
-                let block_defs = blocks.get(label.as_str()).unwrap().defs.clone();
-                let block_uses = blocks.get(label.as_str()).unwrap().uses.clone();
-                let block_live_in_orig = blocks.get(label.as_str()).unwrap().live_in.clone();
-                let block_live_out_orig = blocks.get(label.as_str()).unwrap().live_out.clone();
+                 // Check if block still exists before proceeding
+                 if !blocks.contains_key(&label) { continue; }
+
+                 // Clone necessary info before mutable borrow
+                 let block_succs = blocks.get(&label).unwrap().succs.clone();
+                 let block_defs = blocks.get(&label).unwrap().defs.clone();
+                 let block_uses = blocks.get(&label).unwrap().uses.clone();
+                 let block_live_in_orig = blocks.get(&label).unwrap().live_in.clone();
+                 let block_live_out_orig = blocks.get(&label).unwrap().live_out.clone();
+
 
                 // Calculate new live_out: union of live_in of successors
                 let mut new_live_out = HashSet::new();
@@ -312,135 +355,162 @@ impl RegisterAllocator for LinearScan {
                 new_live_in.extend(live_out_minus_defs);
 
                 // Check if sets changed
-                let block_mut = blocks.get_mut(label.as_str()).unwrap();
-                if new_live_in != block_live_in_orig || new_live_out != block_live_out_orig {
-                    changed = true;
-                    block_mut.live_in = new_live_in;
-                    block_mut.live_out = new_live_out;
-                }
+                 // Re-borrow mutably
+                 if let Some(block_mut) = blocks.get_mut(&label) {
+                     if new_live_in != block_live_in_orig || new_live_out != block_live_out_orig {
+                         changed = true;
+                         block_mut.live_in = new_live_in;
+                         block_mut.live_out = new_live_out;
+                     }
+                 } else {
+                      eprintln!("Warning: Block '{}' disappeared during liveness update.", label);
+                 }
             }
         }
 
         // --- 4. Compute Live Intervals ---
         let mut intervals = HashMap::new(); // var -> LiveInterval
 
-        for (idx, instr) in instrs.iter().enumerate() {
+        // Iterate instructions *backwards* for more accurate interval computation
+        for idx in (0..instrs.len()).rev() {
+            let instr = &instrs[idx];
             let block_label_opt = instr_block_labels.get(&idx);
 
-            // Determine live variables at this specific point (after the instruction executes)
+            // Determine live variables *after* this instruction executes.
+            // live_out[i] = U_{s successor of i} live_in[s]
             let mut live_after_instr = HashSet::new();
             if let Some(block_label) = block_label_opt {
                 if let Some(block) = blocks.get(block_label) {
-                    // If last instruction of block, use live_out
                     if idx == block.range.end - 1 {
+                        // If last instruction of block, live_out is from block's live_out set
                         live_after_instr = block.live_out.clone();
                     } else {
-                        // Otherwise, calculate live_in for the *next* instruction's point
-                        // live_in[i+1] = uses[i+1] U (live_out[i+1] - defs[i+1])
-                        // Simplified approach: Assume live_out of the block persists unless redefined
-                        // A more precise way requires instruction-level liveness, but let's approximate:
-                        live_after_instr = block.live_out.clone();
-                        // Add uses from current instr, remove defs from current instr
-                        let (defs_curr, uses_curr) = Self::get_instr_defs_uses(instr);
-                        live_after_instr.extend(uses_curr);
-                        for def in defs_curr {
-                            live_after_instr.remove(&def);
-                        }
+                         // Otherwise, live_out[i] = live_in[i+1]
+                         // live_in[i+1] = uses[i+1] U (live_out[i+1] - defs[i+1])
+                         // We need liveness *before* the next instruction (i+1) executes.
+                         let next_instr = &instrs[idx + 1];
+                         let (defs_next, uses_next) = Self::get_instr_defs_uses(next_instr);
+
+                         // Start with live vars *after* the next instruction (i+1)
+                         // This requires careful calculation, potentially iterating within the block backward.
+                         // Let's approximate using block live_out for now, as before,
+                         // but acknowledge this is less precise for intervals fully within a block.
+                         // A simpler way: live_in[i] = uses[i] U (live_out[i] - defs[i])
+                         // where live_out[i] is calculated based on successors.
+                         // Let's stick to the block-level approximation for simplicity here.
+                         // We need the set of live variables *just before* instr 'idx' executes.
+                         // live_in[idx] = uses[idx] U (live_after[idx] - defs[idx])
+
+                         // Calculate live *after* instruction 'idx' more directly:
+                         // If 'idx' is not the last instruction: live_after[idx] = live_in[idx+1]
+                         // We need live_in for idx+1.
+                         // Let's compute live_in for each instruction point backward within the block.
+
+                         // Simplified approach (less accurate for intra-block):
+                         // Assume block.live_out is a good proxy for live_after_instr unless it's the last instr.
+                         // This needs refinement. Let's try calculating backward from block end.
+
+                         let mut live = block.live_out.clone(); // Start with live out of the block
+                         for i in (block.range.start..block.range.end).rev() {
+                             let current_instr = &instrs[i];
+                             let (defs_curr, uses_curr) = Self::get_instr_defs_uses(current_instr);
+
+                             // Update live set before this instruction
+                             // live_in[i] = uses[i] U (live_out[i] - defs[i]) where live_out[i] is 'live'
+                             let mut live_before = live.clone();
+                             for def in &defs_curr { live_before.remove(def); }
+                             live_before.extend(uses_curr);
+
+                             // If 'i' is the current instruction index 'idx', this is live_in[idx].
+                             // We need live_out[idx], which is 'live'.
+                             if i == idx {
+                                 live_after_instr = live.clone();
+                                 break; // Found the live set for the current instruction
+                             }
+
+                             // Update 'live' for the next iteration (previous instruction)
+                             live = live_before;
+                         }
                     }
                 }
             }
 
-            // Extend intervals for variables live *after* this instruction
+
+            // --- Update Interval Ranges based on Live Variables ---
+            // Extend interval for any variable live *after* this instruction
             for live_var in &live_after_instr {
                 let interval = intervals
                     .entry(live_var.clone())
                     .or_insert_with(|| LiveInterval {
                         var: live_var.clone(),
-                        range: idx..idx, // Initialize with empty range
+                        range: idx..(idx + 1), // Initialize range at this point if new
                         location: None,
                     });
-                interval.range.end = interval.range.end.max(idx + 1);
-                // Set start point if not set
-                if interval.range.is_empty() {
-                    interval.range.start = idx;
-                }
+                // The interval must start *at or before* this instruction
+                interval.range.start = interval.range.start.min(idx);
+                // End remains as previously set (will be maxed later)
             }
 
-            // Handle definition: ensure interval starts here
+            // Handle definition: ensure interval starts here or earlier
             let (defs, _) = Self::get_instr_defs_uses(instr);
             for def_var in defs {
                 let interval = intervals
                     .entry(def_var.clone())
                     .or_insert_with(|| LiveInterval {
                         var: def_var.clone(),
-                        range: idx..idx + 1, // Define starts interval [def_idx, def_idx+1)
+                        range: idx..(idx + 1), // Definition starts interval
                         location: None,
                     });
-                interval.range.start = interval.range.start.min(idx); // Set start point
-                interval.range.end = interval.range.end.max(idx + 1); // Ensure ends at least past def
+                // A definition potentially shortens the required live range start
+                // but the range must cover the definition itself.
+                interval.range.start = interval.range.start.min(idx);
+                // Ensure interval exists at least at the definition point
+                interval.range.end = interval.range.end.max(idx + 1);
             }
 
-            // Handle uses: ensure interval extends to cover use
+            // Handle uses: ensure interval covers the use point
             let (_, uses) = Self::get_instr_defs_uses(instr);
             for use_var in uses {
                 let interval = intervals
                     .entry(use_var.clone())
                     .or_insert_with(|| LiveInterval {
                         var: use_var.clone(),
-                        range: idx..idx,
+                        range: idx..(idx + 1), // Use ensures liveness at this point
                         location: None,
                     });
-                // If this is the first time seeing var, set start
-                if interval.range.is_empty() {
-                    interval.range.start = idx;
-                }
-                interval.range.end = interval.range.end.max(idx + 1); // Extend past use point
+                 // The interval must start *at or before* this instruction
+                 interval.range.start = interval.range.start.min(idx);
+                 // Ensure interval ends *at or after* this instruction + 1
+                 interval.range.end = interval.range.end.max(idx + 1);
             }
 
-            // Special handling for Phi nodes: sources must be live up until the end of their respective predecessor blocks.
-            if let Instr::Phi(dest, preds) = instr {
-                if let Some(block_label) = block_label_opt {
-                    if let Some(phi_block) = blocks.get(block_label) {
-                        // Ensure destination interval covers at least the phi itself
-                        let phi_start_idx = phi_block.range.start;
-                        let dest_interval =
-                            intervals
-                                .entry(dest.clone())
-                                .or_insert_with(|| LiveInterval {
-                                    var: dest.clone(),
-                                    range: phi_start_idx..phi_start_idx + 1,
-                                    location: None,
-                                });
-                        dest_interval.range.start = dest_interval.range.start.min(phi_start_idx);
-                        dest_interval.range.end = dest_interval.range.end.max(phi_start_idx + 1);
-
-                        for (pred_label, pred_val) in preds {
-                            if let Some(pred_block) = blocks.get(pred_label) {
-                                let pred_end_idx = pred_block.range.end;
-                                let pred_interval = intervals
-                                    .entry(pred_val.clone())
-                                    .or_insert_with(|| LiveInterval {
-                                        var: pred_val.clone(),
-                                        // Initialize range potentially empty or just at pred_end
-                                        range: pred_end_idx..pred_end_idx,
-                                        location: None,
-                                    });
-                                // Ensure the predecessor value's interval extends to the end of the predecessor block
-                                pred_interval.range.end = pred_interval.range.end.max(pred_end_idx);
-                                // If interval was empty, set start point based on earliest known liveness or def
-                                // This part is tricky without full interval tracking before this loop
-                            }
-                        }
-                    }
-                }
+             // Phi nodes definitions conceptually happen at the start of the block.
+             // Their uses (sources) must be live at the end of predecessor blocks.
+             // This backward pass handles the uses naturally.
+             // The definition needs careful start point handling.
+            if let Instr::Phi(dest, _) = instr {
+                 if let Some(block_label) = block_label_opt {
+                     if let Some(block) = blocks.get(block_label) {
+                          let block_start_idx = block.range.start;
+                          let interval = intervals.entry(dest.clone()).or_insert_with(|| LiveInterval {
+                                var: dest.clone(),
+                                range: block_start_idx..block_start_idx + 1,
+                                location: None,
+                            });
+                          interval.range.start = interval.range.start.min(block_start_idx);
+                          interval.range.end = interval.range.end.max(idx + 1); // Ensure covers phi instr itself
+                     }
+                 }
             }
+
         }
+
 
         // Convert intervals map to a Vec and sort by start point
         let mut sorted_intervals: Vec<_> = intervals
             .values()
-            .filter(|&i| !i.range.is_empty())
-            .cloned() // Filter out potentially empty ranges
+            .filter(|&i| !i.range.is_empty()) // Filter out empty ranges
+            .cloned()
             .collect();
         sorted_intervals.sort_by_key(|i| i.range.start);
 
@@ -492,6 +562,7 @@ impl RegisterAllocator for LinearScan {
                         "Spilling CURRENT: {} (ends {})",
                         current.var, current.range.end
                     );
+                    // Don't add current to active list
                 } else {
                     // Spill the active interval candidate
                     let spilled_interval = active.pop().unwrap(); // Remove the last one (ends latest)
@@ -517,9 +588,10 @@ impl RegisterAllocator for LinearScan {
                     final_locations.insert(current.var.clone(), location.clone());
                     current.location = Some(location.clone()); // Update current's state
                     // Log before moving current
-                    eprintln!("Assigning Register to {}: {:?}", current.var, location);
+                    eprintln!("Assigning Register to {}: {:?}
+", current.var, location);
                     // Add current to active list
-                    active.push(current);
+                    active.push(current); // current is moved here
                     active.sort_by_key(|i| i.range.end); // Keep active sorted by end point
                 }
             } else {
@@ -531,9 +603,10 @@ impl RegisterAllocator for LinearScan {
                 final_locations.insert(current.var.clone(), location.clone());
                 current.location = Some(location.clone()); // Update current's state
                 // Log before moving current
-                eprintln!("Assigning Register to {}: {:?}", current.var, location);
+                eprintln!("Assigning Register to {}: {:?}
+", current.var, location);
                 // Add current to active list
-                active.push(current);
+                active.push(current); // current is moved here
                 active.sort_by_key(|i| i.range.end); // Keep active sorted by end point
             }
         }

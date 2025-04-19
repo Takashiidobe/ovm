@@ -21,46 +21,46 @@ impl Pass for ConstantPropagation {
             // Propagate constants for operands before processing the instruction itself
             match &mut current_instr {
                 Instr::BinOp(_, left, _, right) => {
-                    if let Some(&val) = constants.get(left) {
-                        *left = val.to_string();
-                    }
-                    if let Some(&val) = constants.get(right) {
-                        *right = val.to_string();
-                    }
+                    if let Some(&val) = constants.get(left) { *left = val.to_string(); }
+                    if let Some(&val) = constants.get(right) { *right = val.to_string(); }
                 }
                 Instr::Cmp(_, left, _, right) => {
-                    if let Some(&val) = constants.get(left) {
-                        *left = val.to_string();
-                    }
-                    if let Some(&val) = constants.get(right) {
-                        *right = val.to_string();
-                    }
+                    if let Some(&val) = constants.get(left) { *left = val.to_string(); }
+                    if let Some(&val) = constants.get(right) { *right = val.to_string(); }
                 }
                 Instr::Assign(_dest, src) => {
-                    // Check source operand
-                    if let Some(&val) = constants.get(src) {
-                        *src = val.to_string();
-                    }
+                    if let Some(&val) = constants.get(src) { *src = val.to_string(); }
                 }
                 Instr::Phi(_, preds) => {
                     for (_, pred_val) in preds.iter_mut() {
-                        if let Some(&val) = constants.get(pred_val) {
-                            *pred_val = val.to_string();
-                        }
+                        if let Some(&val) = constants.get(pred_val) { *pred_val = val.to_string(); }
                     }
                 }
                 Instr::Print(name) => {
-                    if let Some(&val) = constants.get(name) {
-                        *name = val.to_string();
-                    }
+                    if let Some(&val) = constants.get(name) { *name = val.to_string(); }
                 }
                 Instr::BranchIf(cond, _, _) => {
-                    if let Some(&val) = constants.get(cond) {
-                        *cond = val.to_string();
+                    if let Some(&val) = constants.get(cond) { *cond = val.to_string(); }
+                }
+                // --- Additions for functions ---
+                Instr::Call { target: _, args, result: _ } => {
+                    // Propagate constants into arguments
+                    for arg in args.iter_mut() {
+                        if let Some(&val) = constants.get(arg) {
+                            *arg = val.to_string();
+                        }
+                    }
+                    // Result is handled below (invalidated)
+                }
+                Instr::Ret { value } => {
+                    // Propagate constant into return value
+                    if let Some(ret_val) = value.as_mut() {
+                         if let Some(&val) = constants.get(ret_val) {
+                            *ret_val = val.to_string();
+                         }
                     }
                 }
-                // Jump, Label don't have variable operands to propagate into
-                // Const defines a constant, no operands to propagate into
+                // --- End Additions ---
                 Instr::Jump(_) | Instr::Label(_) | Instr::Const(_, _) => {}
             }
 
@@ -70,30 +70,35 @@ impl Pass for ConstantPropagation {
                     constants.insert(name.clone(), *val);
                 }
                 Instr::Assign(dest, src) => {
-                    // Check if source is a literal number (string) after propagation
                     if let Ok(val) = src.parse::<i64>() {
                         constants.insert(dest.clone(), val);
-                        // We could potentially change this Assign to a Const instruction here,
-                        // but maybe better left for constant folding or copy propagation later.
-                        // current_instr = Instr::Const(dest.clone(), val);
                     } else if let Some(&val) = constants.get(src) {
-                        // If source is a variable still holding a constant
                         constants.insert(dest.clone(), val);
                     } else {
-                        // Result is not constant
                         constants.remove(dest);
                     }
                 }
+                 // --- Additions for functions ---
+                 Instr::Call { target: _, args: _, result } => {
+                     // Call results are never constant in this simple pass.
+                     // Even if all args are constant, the function might be non-deterministic
+                     // or depend on external state.
+                     if let Some(res_var) = result {
+                         constants.remove(res_var);
+                     }
+                     // Important: Calls can potentially modify *any* variable (if memory/globals existed).
+                     // Since we only track SSA temporaries, a call doesn't invalidate other known constants
+                     // unless the language allowed modification of non-local variables directly.
+                     // If functions could modify global state or variables by reference, we'd need to invalidate more here.
+                 }
+                 // --- End Additions ---
                 // Instructions that define a destination variable whose value isn't known constant here
                 Instr::BinOp(dest, ..) | Instr::Cmp(dest, ..) | Instr::Phi(dest, ..) => {
-                    // The destination's value depends on an operation, not directly a constant.
-                    // Constant folding might make it constant later.
                     constants.remove(dest);
                 }
                 // Instructions that don't define a variable we track constants for
-                Instr::Print(_) | Instr::BranchIf(_, _, _) | Instr::Jump(_) | Instr::Label(_) => {
+                Instr::Print(_) | Instr::BranchIf(_, _, _) | Instr::Jump(_) | Instr::Label(_) | Instr::Ret { .. } => {
                     // No constant assignment to track.
-                    // Note: Calls are missing from Instr enum, if added, they might invalidate constants.
                 }
             }
 
@@ -227,5 +232,58 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 
-    // Add tests for Phi nodes if needed
+    #[test]
+    fn test_call_arg_propagation() {
+        let instrs = vec![
+            Instr::Const("arg1".to_string(), 42),
+            Instr::Const("arg2".to_string(), 99),
+            Instr::Call { target: "foo".to_string(), args: vec!["arg1".to_string(), "arg2".to_string()], result: Some("res".to_string()) },
+            Instr::Print("res".to_string()),
+        ];
+        let pass = ConstantPropagation;
+        let optimized = pass.optimize(instrs);
+        let expected = vec![
+            Instr::Const("arg1".to_string(), 42),
+            Instr::Const("arg2".to_string(), 99),
+            // Args are propagated
+            Instr::Call { target: "foo".to_string(), args: vec!["42".to_string(), "99".to_string()], result: Some("res".to_string()) },
+            // Result 'res' is not constant
+            Instr::Print("res".to_string()),
+        ];
+         assert_eq!(optimized, expected);
+    }
+
+     #[test]
+    fn test_ret_val_propagation() {
+        let instrs = vec![
+            Instr::Const("ret_val".to_string(), 100),
+            Instr::Ret { value: Some("ret_val".to_string()) },
+        ];
+        let pass = ConstantPropagation;
+        let optimized = pass.optimize(instrs);
+        let expected = vec![
+            Instr::Const("ret_val".to_string(), 100),
+            // Return value is propagated
+            Instr::Ret { value: Some("100".to_string()) },
+        ];
+         assert_eq!(optimized, expected);
+    }
+
+     #[test]
+    fn test_call_kills_result_constant() {
+        let instrs = vec![
+            Instr::Const("res".to_string(), 1), // res = 1
+            Instr::Call { target: "foo".to_string(), args: vec![], result: Some("res".to_string()) }, // Call redefines res
+            Instr::Assign("other".to_string(), "res".to_string()), // other = res (res is not constant here)
+        ];
+        let pass = ConstantPropagation;
+        let optimized = pass.optimize(instrs);
+        let expected = vec![
+            Instr::Const("res".to_string(), 1),
+            Instr::Call { target: "foo".to_string(), args: vec![], result: Some("res".to_string()) },
+            // 'res' in Assign is not propagated because Call killed the constant
+            Instr::Assign("other".to_string(), "res".to_string()),
+        ];
+         assert_eq!(optimized, expected);
+    }
 }
