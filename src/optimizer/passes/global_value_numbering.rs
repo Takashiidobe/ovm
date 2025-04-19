@@ -29,41 +29,27 @@ impl GlobalValueNumbering {
             match instr {
                 Instr::Const(dest, val) => {
                     let key = ExprKey::Const(*val);
-                    if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
-                        // Value already exists, use Assign
-                        if let Some(canonical_var) = global_vn_to_canonical_var.get(&existing_vn) {
-                            // Only assign if the canonical variable isn't the current dest
-                            if canonical_var != dest {
-                                new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
-                            } else {
-                                // If dest is already the canonical var, the original Const might be needed
-                                // if this is the first time we see it in *this* block's processing,
-                                // even if globally known. Re-emit the const.
-                                new_instrs.push(instr.clone());
-                            }
-                            current_var_to_vn.insert(dest.clone(), existing_vn);
-                        } else {
-                            // This case should ideally not happen if VN state is consistent,
-                            // but defensively re-emit the const if canonical var lookup fails.
-                            eprintln!(
-                                "Warning: GVN found VN for Const but no canonical var. Re-emitting."
-                            );
-                            let vn = *next_vn;
-                            *next_vn += 1;
-                            global_expr_to_vn.insert(key, vn);
-                            current_var_to_vn.insert(dest.clone(), vn);
-                            global_vn_to_canonical_var.insert(vn, dest.clone());
-                            new_instrs.push(instr.clone());
+                    let vn = match global_expr_to_vn.entry(key) {
+                        std::collections::hash_map::Entry::Occupied(entry) => {
+                            // Value number already exists for this constant
+                            *entry.get()
                         }
-                    } else {
-                        // New constant value
-                        let vn = *next_vn;
-                        *next_vn += 1;
-                        global_expr_to_vn.insert(key, vn);
-                        current_var_to_vn.insert(dest.clone(), vn);
-                        global_vn_to_canonical_var.insert(vn, dest.clone());
-                        new_instrs.push(instr.clone()); // Keep the original Const instruction
-                    }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            // New constant value, assign a new VN
+                            let new_vn = *next_vn;
+                            *next_vn += 1;
+                            entry.insert(new_vn);
+                            // Record the canonical variable for this new VN
+                            global_vn_to_canonical_var.insert(new_vn, dest.clone());
+                            new_vn
+                        }
+                    };
+
+                    // Update the current block's variable mapping for the destination
+                    current_var_to_vn.insert(dest.clone(), vn);
+
+                    // Always keep the original Const instruction
+                    new_instrs.push(instr.clone());
                 }
                 Instr::BinOp(dest, src1, op, src2) => {
                     // Ensure operands have value numbers before proceeding

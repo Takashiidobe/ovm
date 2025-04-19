@@ -1,6 +1,7 @@
 pub mod algebraic_simplification;
 pub mod branch_elimination;
 pub mod constant_folding;
+pub mod constant_propagation;
 pub mod copy_propagation;
 pub mod dead_code_elimination;
 pub mod global_value_numbering;
@@ -14,6 +15,7 @@ use crate::optimizer::Instr;
 pub use algebraic_simplification::AlgebraicSimplification;
 pub use branch_elimination::BranchElimination;
 pub use constant_folding::ConstantFolding;
+pub use constant_propagation::ConstantPropagation;
 pub use copy_propagation::CopyPropagation;
 pub use dead_code_elimination::DeadCodeElimination;
 pub use global_value_numbering::GlobalValueNumbering;
