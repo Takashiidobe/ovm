@@ -32,7 +32,7 @@ impl Backend for Codegen {
             self.preprocess_ir_and_build_maps(instrs);
 
         // --- Pass 1 (on processed instrs): Map Phi destinations to block labels ---
-        let mut phi_locations = HashMap::new();
+        let mut phi_locations: HashMap<String, String> = HashMap::new();
         let mut current_block_label_for_phi = "main".to_string();
         if let Some(first_label_instr) = processed_instrs
             .iter()
@@ -248,89 +248,66 @@ impl Backend for Codegen {
                             self.move_memory(&src_loc, &dest_loc);
                         }
                     }
-
                     self.add(format!("jmp {}", label));
                 }
                 Instr::Label(label) => {
-                    self.current_block = Some(label.clone());
+                    // We need to distinguish between function labels and basic block labels.
+                    // For now, just emit the label. Function prologues/epilogues are missing.
                     self.add(format!("{}:", label));
+                    self.current_block = Some(label.clone());
                 }
-                // Phi nodes are handled entirely during the setup passes
-                Instr::Phi(_, _) => {
-                    // No code generation needed here
+                Instr::Phi(dest, preds) => {
+                     // Phi nodes are handled by inserting moves at the end of predecessor blocks.
+                     // No direct code generation needed here for the Phi instruction itself.
+                    eprintln!("Ignoring Phi directly: {} = {:?}", dest, preds);
                 }
-                Instr::Assign(dest, src) => {
-                    let dest = resolve(dest);
-                    let src = resolve(src);
+                 Instr::Call { target, args, result } => {
+                    // TODO: Handle > 6 arguments (stack passing)
+                    // TODO: Handle floating point arguments
+                    let arg_regs = vec!["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
-                    self.move_memory(&src, &dest);
-                }
-                Instr::Call {
-                    target,
-                    args,
-                    result,
-                } => {
-                    // TODO: Implement proper calling convention (stack args, caller/callee saved registers)
-                    let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+                    // Ensure caller-saved registers are saved if needed (requires liveness analysis)
+                    // For now, we assume the register allocator handles this or we accept clobbering.
 
                     // Move arguments into registers
-                    for (i, arg_temp) in args.iter().enumerate() {
-                        if i >= arg_regs.len() {
-                            eprintln!(
-                                "Warning: More than 6 arguments not yet supported for call to {}",
-                                target
-                            );
-                            break;
+                    for (idx, arg_ssa) in args.iter().enumerate() {
+                        if idx >= arg_regs.len() {
+                            panic!("More than 6 arguments not yet supported");
                         }
-                        let arg_loc = resolve(arg_temp);
-                        let reg = arg_regs[i];
-                        // Avoid memory-to-memory move if arg_loc is memory
-                        if arg_loc.contains("(%rip)") {
-                            self.add(format!("movq {}, %rax", arg_loc)); // Use rax as intermediate
-                            self.add(format!("movq %rax, {}", reg));
-                        } else {
-                            self.add(format!("movq {}, {}", arg_loc, reg));
-                        }
+                        let arg_loc = resolve(arg_ssa);
+                        let target_reg = arg_regs[idx];
+                        self.move_memory(&arg_loc, target_reg); // Use move_memory to handle reg/mem
                     }
 
                     // Call the function
-                    // TODO: Need function label resolution/mangling
                     self.add(format!("call {}", target));
 
-                    // Move result from %rax to destination temporary
-                    if let Some(result_temp) = result {
-                        let dest_loc = resolve(result_temp);
-                        self.add(format!("movq %rax, {}", dest_loc));
+                    // Move result from %rax (if any)
+                    if let Some(res_ssa) = result {
+                        let res_loc = resolve(res_ssa);
+                        self.move_memory("%rax", &res_loc); // Use move_memory to handle reg/mem
                     }
+
+                    // Restore caller-saved registers if they were saved
                 }
                 Instr::Ret { value } => {
-                    if let Some(val_temp) = value {
-                        let val_loc = resolve(val_temp);
-                        // Ensure value is in %rax before returning
-                        if val_loc != "%rax" {
-                            // Optimization: don't move if already there
-                            if val_loc.contains("(%rip)") && "%rax".contains("(%rip)") {
-                                // Should not happen as %rax is not memory
-                                self.add(format!("movq {}, %r11", val_loc)); // Use r11 as temp
-                                self.add(format!("movq %r11, %rax"));
-                            } else {
-                                self.add(format!("movq {}, %rax", val_loc));
-                            }
-                        }
-                    } else {
-                        // Default return 0 if no value specified (e.g., void function)
-                        self.add("movq $0, %rax");
+                    if let Some(val_ssa) = value {
+                        let val_loc = resolve(val_ssa);
+                        self.move_memory(&val_loc, "%rax"); // Move return value to %rax
                     }
+                    // TODO: Add function epilogue (restore stack, saved registers)
                     self.add("ret");
                 }
+                Instr::Assign(dest, src) => {
+                    let dest_loc = resolve(dest);
+                    let src_loc = resolve(src);
+                     self.move_memory(&src_loc, &dest_loc);
+                }
+                Instr::FuncParam { .. } => {
+                    // No assembly generated for FuncParam itself.
+                    // Its effect is handled by the register allocator pre-coloring.
+                }
             }
-        }
-
-        // Add default exit for main if the last instruction wasn't already a return
-        // TODO: This is a bit simplistic, needs proper function end detection.
-        if !matches!(processed_instrs.last(), Some(Instr::Ret { .. })) {
-            self.add("movl $0, %eax");
-            self.add("ret");
         }
 
         self.format_asm(&self.asm)
@@ -433,7 +410,12 @@ impl Codegen {
             );
         }
 
-        let mut fallthrough_jumps_to_insert = HashMap::new(); // block_label -> target_label
+        // Collect block start indices and labels for fallthrough check
+        let block_starts: HashMap<usize, String> = blocks.iter()
+            .map(|(lbl, info)| (info.start_idx, lbl.clone()))
+            .collect();
+
+        let mut fallthrough_jumps_to_insert: HashMap<String, String> = HashMap::new(); // block_label -> target_label
 
         for (label, info) in blocks.iter_mut() {
             if info.end_idx >= original_instrs.len() {
@@ -448,52 +430,33 @@ impl Codegen {
                         info.successors.push(then_label.clone());
                         info.successors.push(else_label.clone());
                     }
+                    Instr::Ret { .. } => {
+                        // Return terminates the block, no successors
+                    }
                     _ => {
-                        // Check for fallthrough
+                        // Fallthrough ONLY if not Jump/Branch/Ret/Phi
                         if let Some(next_instr) = original_instrs.get(info.end_idx + 1) {
                             if let Instr::Label(next_label) = next_instr {
-                                info.successors.push(next_label.clone());
-                                // Mark that an explicit jump needs to be inserted
-                                fallthrough_jumps_to_insert
-                                    .insert(label.clone(), next_label.clone());
+                                // Check if a block with this label starts at the next index
+                                if block_starts.get(&(info.end_idx + 1)).map_or(false, |lbl| lbl == next_label) {
+                                     info.successors.push(next_label.clone());
+                                     // Mark that an explicit jump needs to be inserted
+                                     fallthrough_jumps_to_insert
+                                         .insert(label.clone(), next_label.clone());
+                                }
                             }
                         }
-                        // Consider edge case: last block doesn't end in jump/branch and isn't followed by label (e.g. ends in ret implicitly)
-                        // For now, assuming last block might fall through or have explicit jump.
                     }
                 }
             }
         }
 
-        // --- Create Modified Instruction List with Explicit Jumps ---
-        let mut modified_instrs =
-            Vec::with_capacity(original_instrs.len() + fallthrough_jumps_to_insert.len());
-        let mut original_idx = 0;
-        while original_idx < original_instrs.len() {
-            let instr = &original_instrs[original_idx];
-            modified_instrs.push(instr.clone());
+        // --- Create Modified Instruction List (No Jump Insertion Needed Anymore) ---
+        // The IR should now contain explicit terminators (Jump/Ret) where needed.
+        // The fallthrough_jumps_to_insert map is now only used for successor calculation, not modification.
+        let modified_instrs = original_instrs.to_vec();
 
-            // Check if this is the end of a block that needs a fallthrough jump inserted
-            if let Some(block_label) = blocks.iter().find_map(|(lbl, info)| {
-                if info.end_idx == original_idx {
-                    Some(lbl)
-                } else {
-                    None
-                }
-            }) {
-                if let Some(target_label) = fallthrough_jumps_to_insert.get(block_label) {
-                    eprintln!(
-                        "Inserting explicit Jump from {} to {} (fallthrough)",
-                        block_label, target_label
-                    );
-                    modified_instrs.push(Instr::Jump(target_label.clone()));
-                }
-            }
-            original_idx += 1;
-        }
-
-        // --- Recalculate block info based on modified_instrs ---
-        // (Necessary because indices and end instructions changed)
+        // --- Recalculate block info based on modified_instrs (now same as original) ---
         let mut final_blocks = BTreeMap::<String, BlockInfo>::new();
         let mut final_label_to_idx = HashMap::<String, usize>::new();
         let mut current_label = None;

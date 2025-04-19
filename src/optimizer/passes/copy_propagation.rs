@@ -92,6 +92,15 @@ impl Pass for CopyPropagation {
                     // We need to remove all map entries where `dest` is the *value*.
                     copies.retain(|_, source| source != dest);
                 }
+                Instr::FuncParam { name, .. } => {
+                    copies.remove(name);
+                    // If any other variable was a copy *of* 'name', invalidate that.
+                    copies.retain(|_, source| source != name);
+                }
+                Instr::Call { result: Some(dest), .. } => {
+                    copies.remove(dest);
+                    copies.retain(|_, source| source != dest);
+                }
                 _ => {}
             }
 

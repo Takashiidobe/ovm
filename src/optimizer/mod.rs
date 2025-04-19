@@ -22,6 +22,7 @@ pub enum Instr {
     Call { target: String, args: Vec<String>, result: Option<String> },
     Ret { value: Option<String> },
     Assign(String, String),
+    FuncParam { name: String, index: usize },
 }
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash, Copy)]
@@ -177,11 +178,34 @@ impl SSA {
     }
 
     pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
-        self.instructions.push(Instr::Label("main".to_string()));
+        // Separate function definitions from main statements
+        let mut main_stmts = Vec::new();
+        let mut func_stmts = Vec::new();
         for stmt in stmts {
-            eprintln!("{:?}", stmt);
+            if matches!(stmt, Stmt::Function { .. }) {
+                func_stmts.push(stmt);
+            } else {
+                main_stmts.push(stmt);
+            }
+        }
+
+        // Emit main label
+        self.emit(Instr::Label("main".to_string()));
+
+        // Process main statements first
+        for stmt in main_stmts {
+            eprintln!("Processing main stmt: {:?}", stmt);
             self.stmt_to_ir(stmt);
         }
+        // Add an implicit return 0 at the end of main statements
+        self.emit(Instr::Ret { value: None });
+
+        // Process function definitions last
+        for stmt in func_stmts {
+             eprintln!("Processing func stmt: {:?}", stmt);
+            self.stmt_to_ir(stmt);
+        }
+
         self.instructions.clone()
     }
 
@@ -524,7 +548,8 @@ impl SSA {
             }
             Stmt::Function { name, params, body } => {
                 let func_name = name.lexeme.clone();
-                let func_label = self.new_label(&func_name);
+                // Use the original function name as the label directly
+                let func_label = func_name.clone(); 
 
                 // TODO: Store function IR separately. For now, just emit inline.
                 self.emit(Instr::Label(func_label.clone()));
@@ -533,8 +558,9 @@ impl SSA {
                 self.with_scope(|ssa| {
                     // Assign SSA temporaries to parameters
                     // In a real implementation, these would be linked to the Call instruction's arguments
-                    for param in params {
+                    for (i, param) in params.iter().enumerate() {
                         let param_temp = ssa.new_temp(); // Placeholder for argument value
+                        ssa.emit(Instr::FuncParam { name: param_temp.clone(), index: i });
                         ssa.assign_variable(&param.lexeme, &param_temp);
                         // We might need an 'Arg' instruction later to represent parameters formally
                         // ssa.emit(Instr::Arg { index: i, dest: param_temp }); 

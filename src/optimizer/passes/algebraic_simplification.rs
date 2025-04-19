@@ -108,8 +108,13 @@ impl Pass for AlgebraicSimplification {
                     }
                     optimized_instrs.push(instr.clone());
                 }
+                Instr::FuncParam { name, .. } => {
+                    constants.remove(&name);
+                    optimized_instrs.push(Instr::FuncParam { name, index: 0 }); // Keep instruction
+                }
                 _ => {
-                    // For other instructions, invalidate potential definitions
+                    // For other instructions (like Print, Jump, Label, etc.)
+                    // check if they define a register and invalidate constants if so.
                     if let Some(def_reg) = get_defined_register(&instr) {
                         constants.remove(&def_reg);
                     }

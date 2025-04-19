@@ -24,6 +24,40 @@ struct BasicBlock {
     live_out: HashSet<String>,
 }
 
+// Helper function to expire intervals and free registers
+fn expire_old_intervals(
+    active: &mut Vec<LiveInterval>,
+    free_regs: &mut VecDeque<String>,
+    current_start_point: usize,
+) {
+    let mut expire_indices = Vec::new();
+    for (i, active_interval) in active.iter().enumerate() {
+        if active_interval.range.end <= current_start_point {
+            expire_indices.push(i);
+        }
+    }
+    // Remove expired intervals and free their registers (process in reverse index order)
+    expire_indices.sort_by(|a, b| b.cmp(a)); // Sort descending
+    for i in expire_indices {
+        let expired = active.remove(i);
+        // Match on a reference to avoid moving the String
+        if let Some(Location::Register(reg_name)) = &expired.location {
+            // Only free if it wasn't a pre-colored parameter register (for simplicity now)
+            // A more complex system would track pre-colored register lifetime.
+            // For now, we assume pre-colored are needed potentially longer.
+            // if !arg_regs.contains(&reg_name.as_str()) { // Need arg_regs context here...
+                 free_regs.push_back(reg_name.clone()); // Clone the reg name to push back
+                 eprintln!(
+                    "Expiring: {}, Register {:?} freed",
+                    expired.var, expired.location
+                );
+            // }
+        } else {
+            eprintln!("Expiring spilled var: {}", expired.var);
+        }
+    }
+}
+
 pub struct LinearScan;
 
 impl LinearScan {
@@ -55,9 +89,7 @@ impl LinearScan {
             Instr::Jump(_) => {}
             Instr::Label(_) => {}
             Instr::Phi(dest, preds) => {
-                // Definition happens conceptually *at the start* of the block containing the Phi.
                 defs.insert(dest.clone());
-                // Uses happen conceptually *at the end* of the predecessor blocks.
                 for (_, val) in preds {
                     uses.insert(val.clone());
                 }
@@ -66,24 +98,22 @@ impl LinearScan {
                 defs.insert(dest.clone());
                 uses.insert(src.clone());
             }
-            // --- Additions for functions ---
             Instr::Call { target: _, args, result } => {
-                // The result register (if any) is defined by the call.
                 if let Some(res_var) = result {
                     defs.insert(res_var.clone());
                 }
-                // The arguments are used by the call.
                 for arg_var in args {
                     uses.insert(arg_var.clone());
                 }
             }
             Instr::Ret { value } => {
-                // The return value (if any) is used by the ret instruction.
                 if let Some(ret_var) = value {
                     uses.insert(ret_var.clone());
                 }
             }
-            // --- End Additions ---
+            Instr::FuncParam { name, index: _ } => {
+                defs.insert(name.clone()); // FuncParam defines the parameter variable
+            }
         }
         (defs, uses)
     }
@@ -505,6 +535,29 @@ impl RegisterAllocator for LinearScan {
 
         }
 
+        // --- Pre-color Function Parameters based on ABI ---
+        let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+        let mut precolored_regs = HashSet::new(); // Track regs used by params
+
+        for instr in instrs {
+            if let Instr::FuncParam { name, index } = instr {
+                if *index < arg_regs.len() {
+                    let reg = arg_regs[*index].to_string();
+                    if let Some(interval) = intervals.get_mut(name) {
+                        eprintln!(
+                            "Pre-coloring param {}: {} ({}) -> Register {}",
+                            index, name, interval.range.start, reg
+                        );
+                        interval.location = Some(Location::Register(reg.clone()));
+                        // Mark this register as used by a parameter
+                        precolored_regs.insert(reg.clone()); 
+                    } else {
+                        eprintln!("Warning: Live interval not found for FuncParam {}", name);
+                    }
+                }
+                // TODO: Handle params > 6 (stack allocation)
+            }
+        }
 
         // Convert intervals map to a Vec and sort by start point
         let mut sorted_intervals: Vec<_> = intervals
@@ -516,38 +569,49 @@ impl RegisterAllocator for LinearScan {
 
         // --- 5. Linear Scan Allocation ---
         let mut active: Vec<LiveInterval> = Vec::new();
-        let mut free_regs: VecDeque<String> =
-            AVAILABLE_REGS.iter().map(|s| s.to_string()).collect();
+        let mut free_regs: VecDeque<String> = AVAILABLE_REGS
+            .iter()
+            .map(|s| s.to_string())
+             // Filter out registers pre-assigned to parameters that might still be needed
+             // This is a simplification: ideally, we only filter if the param interval is active.
+             // A better approach tracks register availability dynamically.
+            .filter(|r| !precolored_regs.contains(r))
+            .collect();
         let mut final_locations = HashMap::new();
 
         for current_interval_ref in sorted_intervals {
             let mut current = current_interval_ref.clone(); // Clone to modify location later if needed
 
-            // Expire old intervals in active
-            let mut expire_indices = Vec::new();
-            for (i, active_interval) in active.iter().enumerate() {
-                if active_interval.range.end <= current.range.start {
-                    expire_indices.push(i);
-                }
-            }
-            // Remove expired intervals and free their registers (process in reverse index order)
-            expire_indices.sort_by(|a, b| b.cmp(a)); // Sort descending
-            for i in expire_indices {
-                let expired = active.remove(i);
-                // Match on a reference to avoid moving the String
-                if let Some(Location::Register(reg_name)) = &expired.location {
-                    free_regs.push_back(reg_name.clone()); // Clone the reg name to push back
+            // --- Check for Pre-colored Interval ---
+            if let Some(preassigned_loc) = &current.location {
+                if let Location::Register(preassigned_reg) = preassigned_loc {
                     eprintln!(
-                        "Expiring: {}, Register {:?} freed",
-                        expired.var, expired.location
+                        "Processing pre-colored interval: {} at {:?} ({:?})",
+                        current.var,
+                        preassigned_loc,
+                        current.range
                     );
-                } else {
-                    eprintln!("Expiring spilled var: {}", expired.var);
+                    // Ensure this pre-colored interval is tracked in active list
+                    // but don't take a register from free_regs.
+                    // Mark its location in final_locations.
+                    final_locations.insert(current.var.clone(), preassigned_loc.clone());
+
+                    // Expire intervals ending before this pre-colored one starts
+                    expire_old_intervals(&mut active, &mut free_regs, current.range.start);
+
+                    // Add this pre-colored interval to active list
+                    active.push(current); // current is moved here
+                    active.sort_by_key(|i| i.range.end); // Keep active sorted by end point
+                    continue; // Skip normal allocation/spilling for this pre-colored interval
                 }
+                // If location is Spill, it might have been set elsewhere; proceed normally.
             }
 
+            // Expire old intervals in active
+            expire_old_intervals(&mut active, &mut free_regs, current.range.start);
+
             let location: Location;
-            if active.len() == AVAILABLE_REGS.len() {
+            if active.len() == AVAILABLE_REGS.len() - precolored_regs.len() { // Adjust check for precolored regs
                 // Spill: No free registers
                 // Find interval in `active` that ends latest
                 active.sort_by_key(|i| i.range.end); // Ensure active is sorted by end point

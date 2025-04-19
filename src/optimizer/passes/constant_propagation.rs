@@ -42,6 +42,16 @@ impl Pass for ConstantPropagation {
                 Instr::BranchIf(cond, _, _) => {
                     if let Some(&val) = constants.get(cond) { *cond = val.to_string(); }
                 }
+                Instr::FuncParam { .. } => {
+                    // No operands to propagate into
+                }
+                Instr::Ret { value } => {
+                    if let Some(v) = value {
+                        if let Some(&val) = constants.get(v) {
+                            *v = val.to_string();
+                        }
+                    }
+                }
                 // --- Additions for functions ---
                 Instr::Call { target: _, args, result: _ } => {
                     // Propagate constants into arguments
@@ -51,14 +61,6 @@ impl Pass for ConstantPropagation {
                         }
                     }
                     // Result is handled below (invalidated)
-                }
-                Instr::Ret { value } => {
-                    // Propagate constant into return value
-                    if let Some(ret_val) = value.as_mut() {
-                         if let Some(&val) = constants.get(ret_val) {
-                            *ret_val = val.to_string();
-                         }
-                    }
                 }
                 // --- End Additions ---
                 Instr::Jump(_) | Instr::Label(_) | Instr::Const(_, _) => {}
@@ -92,13 +94,16 @@ impl Pass for ConstantPropagation {
                      // If functions could modify global state or variables by reference, we'd need to invalidate more here.
                  }
                  // --- End Additions ---
-                // Instructions that define a destination variable whose value isn't known constant here
+                // Instructions that define a variable whose value isn't known constant here
                 Instr::BinOp(dest, ..) | Instr::Cmp(dest, ..) | Instr::Phi(dest, ..) => {
                     constants.remove(dest);
                 }
+                Instr::FuncParam { name, .. } => {
+                     constants.remove(name); // Parameter value is not constant
+                }
                 // Instructions that don't define a variable we track constants for
                 Instr::Print(_) | Instr::BranchIf(_, _, _) | Instr::Jump(_) | Instr::Label(_) | Instr::Ret { .. } => {
-                    // No constant assignment to track.
+                    // No action needed for constant map
                 }
             }
 

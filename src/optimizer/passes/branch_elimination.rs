@@ -32,6 +32,10 @@ impl Pass for BranchElimination {
                         optimized_instrs.push(instr.clone());
                     }
                 }
+                Instr::FuncParam { .. } => {
+                    // Doesn't affect branching or define a constant
+                    optimized_instrs.push(instr.clone());
+                }
                 _ => {
                     optimized_instrs.push(instr.clone());
                 }

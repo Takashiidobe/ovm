@@ -253,6 +253,10 @@ impl Pass for StrengthReduction {
                     }
                     optimized_instrs.push(instr.clone());
                 }
+                Instr::FuncParam { name, .. } => {
+                    constants.remove(&name);
+                    optimized_instrs.push(Instr::FuncParam { name, index: 0 }); // Keep instruction
+                }
                 _ => {
                     // For other instructions, invalidate potential definitions
                     // A more robust approach would track defs per instruction type
@@ -281,6 +285,8 @@ fn get_defined_register(instr: &Instr) -> Option<String> {
         | Instr::Cmp(d, _, _, _)
         | Instr::Phi(d, _)
         | Instr::Assign(d, _) => Some(d.clone()),
+        Instr::Call { result, .. } => result.as_ref().cloned(), // Call defines its result
+        Instr::FuncParam { name, .. } => Some(name.clone()),    // FuncParam defines name
         _ => None,
     }
 }

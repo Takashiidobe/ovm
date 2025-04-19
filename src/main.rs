@@ -41,10 +41,18 @@ fn main() {
     let mut ssa = SSA::default();
     let ssa_instrs = ssa.program_to_ir(&program);
     let optimizer = Optimizer;
-    let instrs = optimizer.run_all(ssa_instrs);
+    let optimized_instrs = optimizer.run_all(ssa_instrs);
 
-    let register_allocator = LinearScan;
-    let (allocated_instrs, reg_map) = register_allocator.allocate(&instrs);
+    // --- Debug: Print Optimized IR ---
+    eprintln!("--- Optimized IR ---");
+    for (i, instr) in optimized_instrs.iter().enumerate() {
+        eprintln!("{:3}: {:?}", i, instr);
+    }
+    eprintln!("--------------------");
+    // --- End Debug ---
+
+    let allocator = LinearScan;
+    let (allocated_instrs, reg_map) = allocator.allocate(&optimized_instrs);
 
     // Generate assembly
     let asm = backend.generate_assembly(&allocated_instrs, &reg_map);

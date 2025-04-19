@@ -103,6 +103,11 @@ impl<'a> Vm<'a> {
                                 2 // Cycle cost (jump)
                             }
                 Instr::Label(_) => 0,
+                Instr::FuncParam { name, index: _ } => {
+                    // Simulate receiving the parameter, initialize to 0 for verification
+                    self.variables.insert(name.clone(), 0);
+                    0 // Cycle cost (assume negligible for param setup)
+                }
                 Instr::Phi(dest, sources) => {
                                 // Phi nodes are complex in dynamic simulation without knowing the predecessor block.
                                 // A simple VM often assumes Phi nodes are lowered/resolved beforehand.

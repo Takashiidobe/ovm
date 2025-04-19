@@ -26,6 +26,7 @@ impl DeadCodeElimination {
                 result: _,
             } => args.clone(), // Uses are the arguments
             Instr::Ret { value } => value.as_ref().cloned().map_or(vec![], |v| vec![v]), // Use is the return value (if any)
+            Instr::FuncParam { name, .. } => vec![name.clone()], // FuncParam defines its name
             // --- End Additions ---
             Instr::Const(_, _) | Instr::Jump(_) | Instr::Label(_) => vec![], // No variable uses
         }
@@ -43,6 +44,7 @@ impl DeadCodeElimination {
                 args: _,
                 result,
             } => result.iter().cloned().collect(), // Definition is the result (if any)
+            Instr::FuncParam { name, .. } => vec![name.clone()], // FuncParam defines its name
             Instr::Print(_)
             | Instr::BranchIf(_, _, _)
             | Instr::Jump(_)
@@ -299,6 +301,21 @@ impl Pass for DeadCodeElimination {
                     }
                 }
             }
+
+            // --- Add successors to worklist ---
+            // Iterate through instructions in the block to find call targets
+            for instr_idx in *start..*end {
+                if let Some(instr) = instrs.get(instr_idx) {
+                    if let Instr::Call { target, .. } = instr {
+                        eprintln!(
+                            "Found call to {} in reachable block {}, marking target as reachable.",
+                            target,
+                            current_label
+                        );
+                        add_target(target); // Add call target
+                    }
+                }
+            }
         }
         eprintln!("Reachable Labels: {:?}", reachable_labels);
 
@@ -367,6 +384,11 @@ impl Pass for DeadCodeElimination {
                     if let Some(ret_val) = value {
                         uses.push(ret_val.clone());
                     }
+                }
+                Instr::FuncParam { .. } => {
+                    // Function parameters are definitions coming from outside, always essential.
+                    is_essential = true;
+                    // No uses within this instruction itself.
                 }
                 // --- End Additions ---
 
