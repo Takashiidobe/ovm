@@ -56,8 +56,8 @@ impl<'a> Vm<'a> {
                             }
                             lval / rval
                         }
-                        Op::LShift => lval << rval,
-                        Op::RShift => lval >> rval,
+                        Op::Shl => lval << rval,
+                        Op::Shr => lval >> rval,
                         Op::BitAnd | Op::And => lval & rval, // Treat logical and bitwise AND similarly for i64
                         Op::BitOr | Op::Or => lval | rval, // Treat logical and bitwise OR similarly for i64
                     };

@@ -43,8 +43,8 @@ pub enum Op {
     BitOr,
     And,
     Or,
-    LShift,
-    RShift,
+    Shl,
+    Shr,
 }
 
 #[derive(Default, Debug, PartialEq, Clone)]
@@ -549,17 +549,19 @@ impl SSA {
                     TokenType::Minus => self.emit(Instr::BinOp(temp.clone(), l, Op::Sub, r)),
                     TokenType::Star => self.emit(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
                     TokenType::Slash => self.emit(Instr::BinOp(temp.clone(), l, Op::Div, r)),
-                    TokenType::LeftShift=> self.emit(Instr::BinOp(temp.clone(), l, Op::LShift, r)),
-                    TokenType::RightShift => self.emit(Instr::BinOp(temp.clone(), l, Op::RShift, r)),
+                    TokenType::LeftShift => self.emit(Instr::BinOp(temp.clone(), l, Op::Shl, r)),
+                    TokenType::RightShift => self.emit(Instr::BinOp(temp.clone(), l, Op::Shr, r)),
+                    TokenType::BitAnd => self.emit(Instr::BinOp(temp.clone(), l, Op::BitAnd, r)),
+                    TokenType::BitOr => self.emit(Instr::BinOp(temp.clone(), l, Op::BitOr, r)),
                     TokenType::EqualEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::BangEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::BangEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Neq, r)),
+                    TokenType::Less => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
                     TokenType::LessEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
+                    TokenType::Greater => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
                     TokenType::GreaterEqual => {
                         self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
                     }
-                    TokenType::Less => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
-                    TokenType::Greater => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
-                    _ => unreachable!(),
+                    _ => panic!("Unsupported binary operator token: {:?}", operator.r#type),
                 };
 
                 temp

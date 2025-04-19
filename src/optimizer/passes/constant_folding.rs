@@ -34,8 +34,8 @@ impl Pass for ConstantFolding {
                                 Op::BitOr => lv | rv,
                                 Op::And => (lv > 0 && rv > 0) as i64,
                                 Op::Or => (lv > 0 || rv > 0) as i64,
-                                Op::LShift => lv << rv,
-                                Op::RShift => lv >> rv,
+                                Op::Shl => lv << rv,
+                                Op::Shr => lv >> rv,
                             };
                             constants.insert(dest.clone(), result);
                             new_instrs.push(Instr::Const(dest, result));

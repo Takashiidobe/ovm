@@ -4,6 +4,7 @@ pub mod dead_code_elimination;
 pub mod global_value_numbering;
 pub mod move_coalescing;
 pub mod pass;
+pub mod strength_reduction;
 
 use crate::optimizer::Instr;
 
@@ -13,6 +14,7 @@ pub use dead_code_elimination::DeadCodeElimination;
 pub use global_value_numbering::GlobalValueNumbering;
 pub use move_coalescing::MoveCoalescing;
 pub use pass::Pass;
+pub use strength_reduction::StrengthReduction;
 
 /// Available optimization passes
 #[derive(Debug, Clone, Copy)]
@@ -22,6 +24,7 @@ pub enum PassType {
     GlobalValueNumbering,
     MoveCoalescing,
     BranchElimination,
+    StrengthReduction,
 }
 
 /// The main optimizer that runs optimization passes
@@ -34,6 +37,7 @@ impl Optimizer {
         let be = BranchElimination;
         let dce = DeadCodeElimination;
         let mc = MoveCoalescing;
+        let sr = StrengthReduction;
         let gvn = GlobalValueNumbering;
 
         let mut current_instrs = instrs;
@@ -41,10 +45,11 @@ impl Optimizer {
         loop {
             let before_instrs = current_instrs.clone(); // Clone to compare later
 
-            // Run the core iterative passes
+            // Run the core iterative passes in a logical order
             current_instrs = cf.optimize(current_instrs);
-            current_instrs = be.optimize(current_instrs);
             current_instrs = mc.optimize(current_instrs);
+            current_instrs = sr.optimize(current_instrs);
+            current_instrs = be.optimize(current_instrs);
             current_instrs = dce.optimize(current_instrs);
 
             // Check if the instructions changed
@@ -84,6 +89,10 @@ impl Optimizer {
                 }
                 PassType::BranchElimination => {
                     let pass = BranchElimination;
+                    result = pass.optimize(result);
+                }
+                PassType::StrengthReduction => {
+                    let pass = StrengthReduction;
                     result = pass.optimize(result);
                 }
             }

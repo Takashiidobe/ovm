@@ -115,8 +115,8 @@ impl Backend for Codegen {
                                 Op::Mul => "imulq",
                                 Op::BitOr | Op::Or => "orq",
                                 Op::BitAnd | Op::And => "andq",
-                                Op::LShift => "shlq",
-                                Op::RShift => "shrq",
+                                Op::Shl => "shlq",
+                                Op::Shr => "shrq",
                                 _ => unreachable!(),
                             };
                             self.add(format!("{} {}, %rax", op_instr, r));
