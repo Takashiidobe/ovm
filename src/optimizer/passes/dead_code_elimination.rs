@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::optimizer::Instr;
 
@@ -11,7 +11,9 @@ pub struct DeadCodeElimination;
 
 impl Pass for DeadCodeElimination {
     fn optimize(&self, instrs: Vec<Instr>) -> Vec<Instr> {
-        if instrs.is_empty() { return vec![]; }
+        if instrs.is_empty() {
+            return vec![];
+        }
 
         // --- Pass 1: Map definitions and identify block structure (copied from previous attempt) ---
         let mut def_map: HashMap<String, usize> = HashMap::new(); // var_name -> instr_idx defining it
@@ -23,11 +25,13 @@ impl Pass for DeadCodeElimination {
         for (idx, instr) in instrs.iter().enumerate() {
             // Populate def_map
             match instr {
-                Instr::Const(d, _) |
-                Instr::BinOp(d, _, _, _) |
-                Instr::Cmp(d, _, _, _) |
-                Instr::Phi(d, _) |
-                Instr::Assign(d, _) => { def_map.insert(d.clone(), idx); }
+                Instr::Const(d, _)
+                | Instr::BinOp(d, _, _, _)
+                | Instr::Cmp(d, _, _, _)
+                | Instr::Phi(d, _)
+                | Instr::Assign(d, _) => {
+                    def_map.insert(d.clone(), idx);
+                }
                 _ => {}
             }
 
@@ -37,18 +41,25 @@ impl Pass for DeadCodeElimination {
                 label_map.insert(l.clone(), idx);
             }
             match instr {
-                 Instr::Jump(_) | Instr::BranchIf(_, _, _) => {
-                     if idx + 1 < instrs.len() { leaders.insert(idx + 1); }
-                 }
-                 _ => {}
+                Instr::Jump(_) | Instr::BranchIf(_, _, _) => {
+                    if idx + 1 < instrs.len() {
+                        leaders.insert(idx + 1);
+                    }
+                }
+                _ => {}
             }
         }
-         for instr in &instrs { // Add jump targets to leaders
-             match instr {
-                 Instr::Jump(t) | Instr::BranchIf(_, t, _) => { if let Some(idx) = label_map.get(t) { leaders.insert(*idx); } }
-                 _ => {}
-             }
-         }
+        for instr in &instrs {
+            // Add jump targets to leaders
+            match instr {
+                Instr::Jump(t) | Instr::BranchIf(_, t, _) => {
+                    if let Some(idx) = label_map.get(t) {
+                        leaders.insert(*idx);
+                    }
+                }
+                _ => {}
+            }
+        }
 
         let mut sorted_leaders: Vec<_> = leaders.iter().cloned().collect();
         sorted_leaders.sort();
@@ -56,8 +67,21 @@ impl Pass for DeadCodeElimination {
 
         for i in 0..sorted_leaders.len() {
             let start = sorted_leaders[i];
-            let end = if i + 1 < sorted_leaders.len() { sorted_leaders[i + 1] } else { instrs.len() };
-            let label = instrs.get(start).and_then(|instr| if let Instr::Label(l) = instr { Some(l.clone()) } else { None }).unwrap_or_else(|| format!("block_{}", start));
+            let end = if i + 1 < sorted_leaders.len() {
+                sorted_leaders[i + 1]
+            } else {
+                instrs.len()
+            };
+            let label = instrs
+                .get(start)
+                .and_then(|instr| {
+                    if let Instr::Label(l) = instr {
+                        Some(l.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| format!("block_{}", start));
             label_map.entry(label.clone()).or_insert(start);
             blocks.insert(label.clone(), (start, end));
             for idx in start..end {
@@ -68,9 +92,13 @@ impl Pass for DeadCodeElimination {
         // --- Pass 2: Mark Required Labels (Targets + Fallthrough) ---
         let mut required_labels: HashSet<String> = HashSet::new();
         for (_label, (_start, end)) in &blocks {
-            if *end == 0 || *end > instrs.len() { continue; } // Skip empty/invalid blocks
+            if *end == 0 || *end > instrs.len() {
+                continue;
+            } // Skip empty/invalid blocks
             let last_instr_idx = end - 1;
-             if last_instr_idx >= instrs.len() { continue; }
+            if last_instr_idx >= instrs.len() {
+                continue;
+            }
             let last_instr = &instrs[last_instr_idx];
 
             match last_instr {
@@ -81,10 +109,14 @@ impl Pass for DeadCodeElimination {
                 Instr::Jump(target_lbl) => {
                     required_labels.insert(target_lbl.clone());
                 }
-                _ => { // Fallthrough case
+                _ => {
+                    // Fallthrough case
                     if *end < instrs.len() {
                         if let Some(fallthrough_label) = instr_to_label.get(end) {
-                            if blocks.get(fallthrough_label).map_or(false, |(s,_)| *s == *end) {
+                            if blocks
+                                .get(fallthrough_label)
+                                .map_or(false, |(s, _)| *s == *end)
+                            {
                                 required_labels.insert(fallthrough_label.clone());
                             }
                         }
@@ -92,8 +124,9 @@ impl Pass for DeadCodeElimination {
                 }
             }
         }
-        if let Some(entry_label) = instr_to_label.get(&0) { // Ensure entry label is kept
-             required_labels.insert(entry_label.clone());
+        if let Some(entry_label) = instr_to_label.get(&0) {
+            // Ensure entry label is kept
+            required_labels.insert(entry_label.clone());
         }
 
         // --- Pass 3: Mark Essential Instructions using Worklist ---
@@ -131,7 +164,8 @@ impl Pass for DeadCodeElimination {
             if is_essential {
                 essential_instrs.insert(idx);
                 for used_var in uses {
-                    if live_vars.insert(used_var.clone()) { // If newly inserted
+                    if live_vars.insert(used_var.clone()) {
+                        // If newly inserted
                         worklist.push(used_var);
                     }
                 }
@@ -141,11 +175,13 @@ impl Pass for DeadCodeElimination {
         // Propagate liveness backward
         while let Some(var) = worklist.pop() {
             if let Some(def_idx) = def_map.get(&var) {
-                if essential_instrs.insert(*def_idx) { // If the defining instr wasn't already essential
+                if essential_instrs.insert(*def_idx) {
+                    // If the defining instr wasn't already essential
                     let defining_instr = &instrs[*def_idx];
                     let uses = Self::get_instr_uses(defining_instr); // Assign Vec<String> directly
                     for used_var in uses {
-                        if live_vars.insert(used_var.clone()) { // If newly inserted
+                        if live_vars.insert(used_var.clone()) {
+                            // If newly inserted
                             worklist.push(used_var);
                         }
                     }
@@ -259,4 +295,3 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 }
-

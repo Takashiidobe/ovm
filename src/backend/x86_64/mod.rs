@@ -37,7 +37,7 @@ impl Backend for Codegen {
         for instr in instrs {
             if let Instr::Phi(dest, preds) = instr {
                 if let Some(phi_block_label) = phi_locations.get(dest) {
-                     for (pred_label, pred_val_ssa) in preds {
+                    for (pred_label, pred_val_ssa) in preds {
                         eprintln!(
                             "Phi Prep (Pass 2): At end of block '{}', move '{}' to target of '{}' (which is in block '{}')",
                             pred_label, pred_val_ssa, dest, phi_block_label
@@ -48,7 +48,10 @@ impl Backend for Codegen {
                             .push((dest.clone(), pred_val_ssa.clone()));
                     }
                 } else {
-                    eprintln!("Warning: Could not find block location for Phi dest '{}'", dest);
+                    eprintln!(
+                        "Warning: Could not find block location for Phi dest '{}'",
+                        dest
+                    );
                 }
             }
         }
@@ -147,7 +150,7 @@ impl Backend for Codegen {
                     let cond_reg = resolve(cond);
                     self.add(format!("cmpq $0, {}", cond_reg));
                     self.add(format!("jne {}", then_label)); // Jump if condition is true (non-zero)
-                    
+
                     // Code for the 'else' path (condition is false/zero)
                     // Emit Phi moves for the edge to the else block *before* jumping/falling through
                     if let Some(prep_moves) = self
@@ -162,7 +165,7 @@ impl Backend for Codegen {
                         }
                     }
                     self.add(format!("jmp {}", else_label)); // Jump to else block
-                    
+
                     // Code for the 'then' path (condition is true/non-zero)
                     // Need a label for the jump instruction above to target
                     // self.add(format!("{}:", then_label)); // The original branch goes here
@@ -175,7 +178,7 @@ impl Backend for Codegen {
                         .get(&(self.current_block.clone().unwrap(), then_label.to_string()))
                     {
                         eprintln!("Phi Moves for edge to {}: {:?}", then_label, prep_moves);
-                         for (phi_dest_ssa, pred_val_ssa) in prep_moves.clone() {
+                        for (phi_dest_ssa, pred_val_ssa) in prep_moves.clone() {
                             let dest_loc = resolve(&phi_dest_ssa);
                             let src_loc = resolve(&pred_val_ssa);
                             self.move_memory(&src_loc, &dest_loc);
@@ -185,7 +188,7 @@ impl Backend for Codegen {
                     // Or an explicit jump if the structure requires it (we assume fallthrough for now)
                 }
                 Instr::Jump(label) => {
-                     // Emit Phi moves for the edge to the target block *before* jumping
+                    // Emit Phi moves for the edge to the target block *before* jumping
                     if let Some(prep_moves) = self
                         .phi_prep_moves
                         .get(&(self.current_block.clone().unwrap(), label.to_string()))

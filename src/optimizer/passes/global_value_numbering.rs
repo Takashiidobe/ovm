@@ -22,8 +22,8 @@ impl GlobalValueNumbering {
 
         for instr in instrs {
             if matches!(instr, Instr::Label(_)) {
-                 new_instrs.push(instr.clone());
-                 continue;
+                new_instrs.push(instr.clone());
+                continue;
             }
 
             match instr {
@@ -35,10 +35,14 @@ impl GlobalValueNumbering {
                     new_instrs.push(instr.clone());
                 }
                 Instr::BinOp(dest, src1, op, src2) => {
-                    if let (Some(&vn1), Some(&vn2)) = (current_var_to_vn.get(src1), current_var_to_vn.get(src2)) {
+                    if let (Some(&vn1), Some(&vn2)) =
+                        (current_var_to_vn.get(src1), current_var_to_vn.get(src2))
+                    {
                         let key = ExprKey::from_binop(*op, vn1, vn2);
                         if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
-                            let canonical_var = global_vn_to_canonical_var.get(&existing_vn).expect("Canonical var must exist");
+                            let canonical_var = global_vn_to_canonical_var
+                                .get(&existing_vn)
+                                .expect("Canonical var must exist");
                             current_var_to_vn.insert(dest.clone(), existing_vn);
                             new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
                         } else {
@@ -50,18 +54,22 @@ impl GlobalValueNumbering {
                             new_instrs.push(instr.clone());
                         }
                     } else {
-                         let vn = *next_vn;
-                         *next_vn += 1;
-                         current_var_to_vn.insert(dest.clone(), vn);
-                         global_vn_to_canonical_var.insert(vn, dest.clone());
+                        let vn = *next_vn;
+                        *next_vn += 1;
+                        current_var_to_vn.insert(dest.clone(), vn);
+                        global_vn_to_canonical_var.insert(vn, dest.clone());
                         new_instrs.push(instr.clone());
                     }
                 }
                 Instr::Cmp(dest, src1, op, src2) => {
-                     if let (Some(&vn1), Some(&vn2)) = (current_var_to_vn.get(src1), current_var_to_vn.get(src2)) {
+                    if let (Some(&vn1), Some(&vn2)) =
+                        (current_var_to_vn.get(src1), current_var_to_vn.get(src2))
+                    {
                         let key = ExprKey::Cmp(*op, vn1, vn2);
                         if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
-                            let canonical_var = global_vn_to_canonical_var.get(&existing_vn).expect("Canonical var must exist");
+                            let canonical_var = global_vn_to_canonical_var
+                                .get(&existing_vn)
+                                .expect("Canonical var must exist");
                             current_var_to_vn.insert(dest.clone(), existing_vn);
                             new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
                         } else {
@@ -73,37 +81,37 @@ impl GlobalValueNumbering {
                             new_instrs.push(instr.clone());
                         }
                     } else {
-                         let vn = *next_vn;
-                         *next_vn += 1;
-                         current_var_to_vn.insert(dest.clone(), vn);
-                         global_vn_to_canonical_var.insert(vn, dest.clone());
+                        let vn = *next_vn;
+                        *next_vn += 1;
+                        current_var_to_vn.insert(dest.clone(), vn);
+                        global_vn_to_canonical_var.insert(vn, dest.clone());
                         new_instrs.push(instr.clone());
                     }
                 }
                 Instr::Assign(dest, src) => {
-                     if let Some(&src_vn) = current_var_to_vn.get(src) {
+                    if let Some(&src_vn) = current_var_to_vn.get(src) {
                         current_var_to_vn.insert(dest.clone(), src_vn);
                         new_instrs.push(instr.clone());
                     } else {
-                         let vn = *next_vn;
-                         *next_vn += 1;
-                         current_var_to_vn.insert(dest.clone(), vn);
-                         global_vn_to_canonical_var.insert(vn, dest.clone());
+                        let vn = *next_vn;
+                        *next_vn += 1;
+                        current_var_to_vn.insert(dest.clone(), vn);
+                        global_vn_to_canonical_var.insert(vn, dest.clone());
                         new_instrs.push(instr.clone());
                     }
                 }
-                 Instr::Phi(dest, _) => {
+                Instr::Phi(dest, _) => {
                     if !current_var_to_vn.contains_key(dest) {
                         let vn = *next_vn;
                         *next_vn += 1;
                         current_var_to_vn.insert(dest.clone(), vn);
                         global_vn_to_canonical_var.insert(vn, dest.clone());
-                     }
+                    }
                     new_instrs.push(instr.clone());
                 }
-                 _ => {
-                     new_instrs.push(instr.clone());
-                 }
+                _ => {
+                    new_instrs.push(instr.clone());
+                }
             }
         }
         (new_instrs, current_var_to_vn)
@@ -116,7 +124,9 @@ impl Pass for GlobalValueNumbering {
     }
 
     fn optimize(&self, instrs: Vec<Instr>) -> Vec<Instr> {
-        if instrs.is_empty() { return instrs; }
+        if instrs.is_empty() {
+            return instrs;
+        }
 
         // 1. Build CFG
         let mut blocks: HashMap<String, Vec<Instr>> = HashMap::new();
@@ -139,10 +149,16 @@ impl Pass for GlobalValueNumbering {
                             matches!(li, Instr::Jump(_) | Instr::BranchIf(_, _, _))
                         });
                         if !last_instr_is_terminator {
-                             successors.entry(prev_label.clone()).or_default().push(label.clone());
-                             predecessors.entry(label.clone()).or_default().push(prev_label.clone());
+                            successors
+                                .entry(prev_label.clone())
+                                .or_default()
+                                .push(label.clone());
+                            predecessors
+                                .entry(label.clone())
+                                .or_default()
+                                .push(prev_label.clone());
                         }
-                        blocks.insert(prev_label, current_instrs); 
+                        blocks.insert(prev_label, current_instrs);
                     }
                 }
                 current_label = Some(label.clone());
@@ -151,32 +167,50 @@ impl Pass for GlobalValueNumbering {
                 successors.entry(label.clone()).or_default();
                 current_instrs = vec![instr.clone()];
             } else {
-                 if let Some(ref label) = current_label {
+                if let Some(ref label) = current_label {
                     current_instrs.push(instr.clone());
                     let mut terminated = false;
                     match instr {
-                         Instr::Jump(target_label) => {
-                            successors.entry(label.clone()).or_default().push(target_label.clone());
-                            predecessors.entry(target_label.clone()).or_default().push(label.clone());
+                        Instr::Jump(target_label) => {
+                            successors
+                                .entry(label.clone())
+                                .or_default()
+                                .push(target_label.clone());
+                            predecessors
+                                .entry(target_label.clone())
+                                .or_default()
+                                .push(label.clone());
                             terminated = true;
                         }
                         Instr::BranchIf(_, true_label, false_label) => {
-                            successors.entry(label.clone()).or_default().push(true_label.clone());
-                            predecessors.entry(true_label.clone()).or_default().push(label.clone());
-                            successors.entry(label.clone()).or_default().push(false_label.clone());
-                            predecessors.entry(false_label.clone()).or_default().push(label.clone());
+                            successors
+                                .entry(label.clone())
+                                .or_default()
+                                .push(true_label.clone());
+                            predecessors
+                                .entry(true_label.clone())
+                                .or_default()
+                                .push(label.clone());
+                            successors
+                                .entry(label.clone())
+                                .or_default()
+                                .push(false_label.clone());
+                            predecessors
+                                .entry(false_label.clone())
+                                .or_default()
+                                .push(label.clone());
                             terminated = true;
                         }
                         _ => {}
                     }
                     if terminated {
-                         blocks.insert(label.clone(), current_instrs); 
-                         current_label = None; 
-                         current_instrs = Vec::new();
+                        blocks.insert(label.clone(), current_instrs);
+                        current_label = None;
+                        current_instrs = Vec::new();
                     }
-                 } else {
-                     panic!("Internal error: Instruction processed before first label.");
-                 }
+                } else {
+                    panic!("Internal error: Instruction processed before first label.");
+                }
             }
         }
         if let Some(label) = current_label {
@@ -226,7 +260,7 @@ impl Pass for GlobalValueNumbering {
 
                     for (pred_label, source_var) in sources {
                         if let Some(pred_exit_state) = block_exit_states.get(pred_label) {
-                             if let Some(&source_vn) = pred_exit_state.get(source_var) {
+                            if let Some(&source_vn) = pred_exit_state.get(source_var) {
                                 if first_source {
                                     incoming_vn = Some(source_vn);
                                     first_source = false;
@@ -234,13 +268,13 @@ impl Pass for GlobalValueNumbering {
                                     disagreed = true;
                                     break; // Disagreement found
                                 }
-                             } else {
-                                 disagreed = true;
-                                 break;
-                             }
+                            } else {
+                                disagreed = true;
+                                break;
+                            }
                         } else {
-                             disagreed = true;
-                             break;
+                            disagreed = true;
+                            break;
                         }
                     }
 
@@ -248,9 +282,12 @@ impl Pass for GlobalValueNumbering {
                     if disagreed {
                         // Disagreement among incoming VNs.
                         // Check previous iteration's entry state for this block (`label`).
-                         if let Some(prev_vn) = block_entry_states.get(&label).and_then(|prev_state| prev_state.get(dest)) {
-                             // Reuse previous VN to aid convergence.
-                             computed_entry_state.insert(dest.clone(), *prev_vn);
+                        if let Some(prev_vn) = block_entry_states
+                            .get(&label)
+                            .and_then(|prev_state| prev_state.get(dest))
+                        {
+                            // Reuse previous VN to aid convergence.
+                            computed_entry_state.insert(dest.clone(), *prev_vn);
                         } else {
                             // No previous VN / first time disagreement. Assign a fresh VN.
                             let new_vn = next_vn;
@@ -262,12 +299,12 @@ impl Pass for GlobalValueNumbering {
                         // All known sources agree
                         computed_entry_state.insert(dest.clone(), vn);
                     } else {
-                         // No known incoming VNs (e.g., unreachable code feeding phi?)
-                         // Assign new VN. This might indicate earlier IR issues.
-                         let new_vn = next_vn;
-                         next_vn += 1;
-                         computed_entry_state.insert(dest.clone(), new_vn);
-                         global_vn_to_canonical_var.insert(new_vn, dest.clone());
+                        // No known incoming VNs (e.g., unreachable code feeding phi?)
+                        // Assign new VN. This might indicate earlier IR issues.
+                        let new_vn = next_vn;
+                        next_vn += 1;
+                        computed_entry_state.insert(dest.clone(), new_vn);
+                        global_vn_to_canonical_var.insert(new_vn, dest.clone());
                     }
                 }
 
@@ -282,15 +319,17 @@ impl Pass for GlobalValueNumbering {
 
                 for var in potential_vars {
                     // Skip if already handled by a Phi node
-                    if phi_defs.contains_key(&var) { continue; }
+                    if phi_defs.contains_key(&var) {
+                        continue;
+                    }
 
                     let mut agreed_vn: Option<usize> = None;
                     let mut first_pred = true;
                     let mut missing_or_disagreed = false;
 
                     for pred_label in &block_preds {
-                         if let Some(pred_exit_state) = block_exit_states.get(pred_label) {
-                             if let Some(&vn) = pred_exit_state.get(&var) {
+                        if let Some(pred_exit_state) = block_exit_states.get(pred_label) {
+                            if let Some(&vn) = pred_exit_state.get(&var) {
                                 if first_pred {
                                     agreed_vn = Some(vn);
                                     first_pred = false;
@@ -298,33 +337,33 @@ impl Pass for GlobalValueNumbering {
                                     missing_or_disagreed = true;
                                     break;
                                 }
-                             } else {
-                                 // Variable missing in this predecessor
-                                 missing_or_disagreed = true;
-                                 break;
-                             }
+                            } else {
+                                // Variable missing in this predecessor
+                                missing_or_disagreed = true;
+                                break;
+                            }
                         } else {
-                             // Should not happen with pre-initialization
+                            // Should not happen with pre-initialization
                             missing_or_disagreed = true;
-                             break;
+                            break;
                         }
                     }
 
                     if !missing_or_disagreed {
-                         if let Some(vn) = agreed_vn {
+                        if let Some(vn) = agreed_vn {
                             computed_entry_state.insert(var.clone(), vn);
-                         }
+                        }
                     }
                 }
             } // else: entry block, entry state remains empty
-            
-            // --- End Merge Logic --- 
+
+            // --- End Merge Logic ---
 
             // Check if entry state changed compared to previous iteration
             let old_entry_state = block_entry_states.get(&label).unwrap(); // Should exist due to init
             if old_entry_state == &computed_entry_state && optimized_blocks.contains_key(&label) {
-                 // If entry state hasn't changed and we already processed this block, skip.
-                 continue;
+                // If entry state hasn't changed and we already processed this block, skip.
+                continue;
             }
 
             // Store the computed entry state
@@ -343,11 +382,11 @@ impl Pass for GlobalValueNumbering {
             // --- Check exit state and update worklist ---
             let old_exit_state = block_exit_states.insert(label.clone(), exit_state.clone()); // Update and get old
             if old_exit_state.as_ref() != Some(&exit_state) {
-                 // Exit state changed (or was None before), add successors to worklist
+                // Exit state changed (or was None before), add successors to worklist
                 if let Some(succs) = successors.get(&label) {
                     for succ_label in succs {
-                        if !worklist.contains(succ_label) { 
-                             worklist.push_back(succ_label.clone());
+                        if !worklist.contains(succ_label) {
+                            worklist.push_back(succ_label.clone());
                         }
                     }
                 }
@@ -360,10 +399,10 @@ impl Pass for GlobalValueNumbering {
             if let Some(opt_instrs) = optimized_blocks.get(label) {
                 final_instrs.extend(opt_instrs.clone());
             } else {
-                 if let Some(orig_instrs) = blocks.get(label){
+                if let Some(orig_instrs) = blocks.get(label) {
                     // Fallback if block wasn't optimized (shouldn't happen with this worklist setup)
                     final_instrs.extend(orig_instrs.clone());
-                 }
+                }
             }
         }
         final_instrs
@@ -401,7 +440,7 @@ impl ExprKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::{Instr, Op, CmpOp};
+    use crate::optimizer::{CmpOp, Instr, Op};
 
     #[test]
     fn test_simple_redundancy_with_label() {
@@ -410,8 +449,18 @@ mod tests {
             Instr::Label("entry".to_string()), // Added Label
             Instr::Const("c1".to_string(), 1),
             Instr::Const("c2".to_string(), 2),
-            Instr::BinOp("t0".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), 
-            Instr::BinOp("t1".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), 
+            Instr::BinOp(
+                "t0".to_string(),
+                "c1".to_string(),
+                Op::Add,
+                "c2".to_string(),
+            ),
+            Instr::BinOp(
+                "t1".to_string(),
+                "c1".to_string(),
+                Op::Add,
+                "c2".to_string(),
+            ),
             Instr::Print("t1".to_string()),
         ];
 
@@ -419,7 +468,12 @@ mod tests {
             Instr::Label("entry".to_string()),
             Instr::Const("c1".to_string(), 1),
             Instr::Const("c2".to_string(), 2),
-            Instr::BinOp("t0".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), 
+            Instr::BinOp(
+                "t0".to_string(),
+                "c1".to_string(),
+                Op::Add,
+                "c2".to_string(),
+            ),
             Instr::Assign("t1".to_string(), "t0".to_string()), // t1 = t0
             Instr::Print("t1".to_string()),
         ];
@@ -435,8 +489,18 @@ mod tests {
             Instr::Label("entry".to_string()), // Added Label
             Instr::Const("c1".to_string(), 1),
             Instr::Const("c2".to_string(), 2),
-            Instr::BinOp("t0".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // t0 = 1 + 2
-            Instr::BinOp("t1".to_string(), "c2".to_string(), Op::Add, "c1".to_string()), // t1 = 2 + 1 (redundant due to commutativity)
+            Instr::BinOp(
+                "t0".to_string(),
+                "c1".to_string(),
+                Op::Add,
+                "c2".to_string(),
+            ), // t0 = 1 + 2
+            Instr::BinOp(
+                "t1".to_string(),
+                "c2".to_string(),
+                Op::Add,
+                "c1".to_string(),
+            ), // t1 = 2 + 1 (redundant due to commutativity)
             Instr::Print("t1".to_string()),
         ];
 
@@ -444,7 +508,12 @@ mod tests {
             Instr::Label("entry".to_string()), // Added Label
             Instr::Const("c1".to_string(), 1),
             Instr::Const("c2".to_string(), 2),
-            Instr::BinOp("t0".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // t0 = 1 + 2
+            Instr::BinOp(
+                "t0".to_string(),
+                "c1".to_string(),
+                Op::Add,
+                "c2".to_string(),
+            ), // t0 = 1 + 2
             Instr::Assign("t1".to_string(), "t0".to_string()), // t1 = t0
             Instr::Print("t1".to_string()),
         ];
@@ -453,15 +522,25 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 
-        #[test]
+    #[test]
     fn test_non_commutative() {
         let gvn = GlobalValueNumbering;
         let instrs = vec![
             Instr::Label("entry".to_string()), // Added Label
             Instr::Const("c3".to_string(), 3),
             Instr::Const("c1".to_string(), 1),
-            Instr::BinOp("t0".to_string(), "c3".to_string(), Op::Sub, "c1".to_string()), // t0 = 3 - 1
-            Instr::BinOp("t1".to_string(), "c1".to_string(), Op::Sub, "c3".to_string()), // t1 = 1 - 3 (NOT redundant)
+            Instr::BinOp(
+                "t0".to_string(),
+                "c3".to_string(),
+                Op::Sub,
+                "c1".to_string(),
+            ), // t0 = 3 - 1
+            Instr::BinOp(
+                "t1".to_string(),
+                "c1".to_string(),
+                Op::Sub,
+                "c3".to_string(),
+            ), // t1 = 1 - 3 (NOT redundant)
             Instr::Print("t0".to_string()),
             Instr::Print("t1".to_string()),
         ];
@@ -471,8 +550,18 @@ mod tests {
             Instr::Label("entry".to_string()), // Added Label
             Instr::Const("c3".to_string(), 3),
             Instr::Const("c1".to_string(), 1),
-            Instr::BinOp("t0".to_string(), "c3".to_string(), Op::Sub, "c1".to_string()),
-            Instr::BinOp("t1".to_string(), "c1".to_string(), Op::Sub, "c3".to_string()),
+            Instr::BinOp(
+                "t0".to_string(),
+                "c3".to_string(),
+                Op::Sub,
+                "c1".to_string(),
+            ),
+            Instr::BinOp(
+                "t1".to_string(),
+                "c1".to_string(),
+                Op::Sub,
+                "c3".to_string(),
+            ),
             Instr::Print("t0".to_string()),
             Instr::Print("t1".to_string()),
         ];
@@ -487,8 +576,18 @@ mod tests {
             Instr::Label("entry".to_string()), // Added Label
             Instr::Const("c10".to_string(), 10),
             Instr::Const("c20".to_string(), 20),
-            Instr::Cmp("t0".to_string(), "c10".to_string(), CmpOp::Lt, "c20".to_string()), // t0 = 10 < 20
-            Instr::Cmp("t1".to_string(), "c10".to_string(), CmpOp::Lt, "c20".to_string()), // t1 = 10 < 20 (redundant)
+            Instr::Cmp(
+                "t0".to_string(),
+                "c10".to_string(),
+                CmpOp::Lt,
+                "c20".to_string(),
+            ), // t0 = 10 < 20
+            Instr::Cmp(
+                "t1".to_string(),
+                "c10".to_string(),
+                CmpOp::Lt,
+                "c20".to_string(),
+            ), // t1 = 10 < 20 (redundant)
             Instr::Print("t1".to_string()),
         ];
 
@@ -496,7 +595,12 @@ mod tests {
             Instr::Label("entry".to_string()), // Added Label
             Instr::Const("c10".to_string(), 10),
             Instr::Const("c20".to_string(), 20),
-            Instr::Cmp("t0".to_string(), "c10".to_string(), CmpOp::Lt, "c20".to_string()), // t0 = 10 < 20
+            Instr::Cmp(
+                "t0".to_string(),
+                "c10".to_string(),
+                CmpOp::Lt,
+                "c20".to_string(),
+            ), // t0 = 10 < 20
             Instr::Assign("t1".to_string(), "t0".to_string()), // t1 = t0
             Instr::Print("t1".to_string()),
         ];
@@ -507,14 +611,14 @@ mod tests {
 
     #[test]
     fn test_chained_redundancy() {
-         let gvn = GlobalValueNumbering;
+        let gvn = GlobalValueNumbering;
         let instrs = vec![
             Instr::Label("entry".to_string()), // Added Label
             Instr::Const("c1".to_string(), 1),
             Instr::Const("c2".to_string(), 2),
             Instr::Const("c3".to_string(), 3),
             Instr::BinOp("a".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // a = 1 + 2
-            Instr::BinOp("b".to_string(), "a".to_string(), Op::Mul, "c3".to_string()), // b = a * 3
+            Instr::BinOp("b".to_string(), "a".to_string(), Op::Mul, "c3".to_string()),  // b = a * 3
             Instr::BinOp("c".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // c = 1 + 2 (redundant with a)
             Instr::BinOp("d".to_string(), "c".to_string(), Op::Mul, "c3".to_string()), // d = c * 3 (redundant with b)
             Instr::Print("d".to_string()),
@@ -526,9 +630,9 @@ mod tests {
             Instr::Const("c2".to_string(), 2),
             Instr::Const("c3".to_string(), 3),
             Instr::BinOp("a".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // a = 1 + 2
-            Instr::BinOp("b".to_string(), "a".to_string(), Op::Mul, "c3".to_string()), // b = a * 3
-            Instr::Assign("c".to_string(), "a".to_string()),                         // c = a
-            Instr::Assign("d".to_string(), "b".to_string()),                         // d = b
+            Instr::BinOp("b".to_string(), "a".to_string(), Op::Mul, "c3".to_string()),  // b = a * 3
+            Instr::Assign("c".to_string(), "a".to_string()),                            // c = a
+            Instr::Assign("d".to_string(), "b".to_string()),                            // d = b
             Instr::Print("d".to_string()),
         ];
 
@@ -547,17 +651,20 @@ mod tests {
             Instr::BinOp("a".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // a = 1 + 2
             Instr::Const("cond".to_string(), 1), // Assume true condition
             Instr::BranchIf("cond".to_string(), "then".to_string(), "else".to_string()),
-            
             Instr::Label("then".to_string()),
-            Instr::BinOp("b".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // REDUNDANT: b = 1 + 2 
+            Instr::BinOp("b".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // REDUNDANT: b = 1 + 2
             Instr::Jump("merge".to_string()),
-
             Instr::Label("else".to_string()),
             Instr::BinOp("c".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // REDUNDANT: c = 1 + 2
             Instr::Jump("merge".to_string()),
-
             Instr::Label("merge".to_string()),
-            Instr::Phi("d".to_string(), vec![("then".to_string(), "b".to_string()), ("else".to_string(), "c".to_string())]),
+            Instr::Phi(
+                "d".to_string(),
+                vec![
+                    ("then".to_string(), "b".to_string()),
+                    ("else".to_string(), "c".to_string()),
+                ],
+            ),
             Instr::Print("d".to_string()),
         ];
 
@@ -568,17 +675,20 @@ mod tests {
             Instr::BinOp("a".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // Original calculation
             Instr::Const("cond".to_string(), 1),
             Instr::BranchIf("cond".to_string(), "then".to_string(), "else".to_string()),
-            
             Instr::Label("then".to_string()),
             Instr::Assign("b".to_string(), "a".to_string()), // Replaced with assignment
             Instr::Jump("merge".to_string()),
-
             Instr::Label("else".to_string()),
             Instr::Assign("c".to_string(), "a".to_string()), // Replaced with assignment
             Instr::Jump("merge".to_string()),
-
             Instr::Label("merge".to_string()),
-            Instr::Phi("d".to_string(), vec![("then".to_string(), "b".to_string()), ("else".to_string(), "c".to_string())]), // Phi remains
+            Instr::Phi(
+                "d".to_string(),
+                vec![
+                    ("then".to_string(), "b".to_string()),
+                    ("else".to_string(), "c".to_string()),
+                ],
+            ), // Phi remains
             Instr::Print("d".to_string()),
         ];
 

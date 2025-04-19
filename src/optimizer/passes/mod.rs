@@ -1,7 +1,7 @@
 pub mod constant_folding;
 pub mod dead_code_elimination;
-pub mod pass;
 pub mod global_value_numbering;
+pub mod pass;
 
 use crate::optimizer::Instr;
 
@@ -175,4 +175,3 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 }
-
