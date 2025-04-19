@@ -92,6 +92,25 @@ impl Pass for StrengthReduction {
                                 replaced = true;
                             }
                         }
+                        Op::Mod => {
+                            // Handle modulo where the divisor is the power of two constant
+                            if let Some(exponent) =
+                                right_val.and_then(|&rv| Self::get_power_of_two_exponent(rv))
+                            {
+                                // x % (2^exponent) => x & ((2^exponent) - 1)
+                                let mask_val = (1i64 << exponent) - 1;
+                                let mask_reg = format!("{}_mask", dest);
+                                optimized_instrs
+                                    .push(Instr::Const(mask_reg.clone(), mask_val));
+                                optimized_instrs.push(Instr::BinOp(
+                                    dest.clone(),
+                                    left.clone(),
+                                    Op::BitAnd, // Use bitwise AND
+                                    mask_reg,
+                                ));
+                                replaced = true;
+                            }
+                        }
                         _ => {}
                     }
 
@@ -391,5 +410,38 @@ mod tests {
             optimized, expected,
             "Optimization should happen due to internal constant propagation through Assign"
         );
+    }
+
+    #[test]
+    fn test_modulo_by_power_of_two() {
+        let instrs = vec![
+            Instr::Label("entry".to_string()),
+            Instr::Const("t0".to_string(), 17), // x = 17
+            Instr::Const("t1".to_string(), 8),  // y = 8 (which is 2^3)
+            Instr::BinOp(
+                "t2".to_string(),
+                "t0".to_string(),
+                Op::Mod,
+                "t1".to_string(),
+            ), // t2 = t0 % t1
+            Instr::Print("t2".to_string()),
+        ];
+        let pass = StrengthReduction;
+        let optimized = pass.optimize(instrs);
+
+        let expected = vec![
+            Instr::Label("entry".to_string()),
+            Instr::Const("t0".to_string(), 17),
+            Instr::Const("t1".to_string(), 8),
+            Instr::Const("t2_mask".to_string(), 7), // mask = (2^3 - 1) = 7
+            Instr::BinOp(
+                "t2".to_string(),
+                "t0".to_string(),
+                Op::BitAnd, // Use bitwise AND
+                "t2_mask".to_string(),
+            ), // t2 = t0 & 7
+            Instr::Print("t2".to_string()),
+        ];
+        assert_eq!(optimized, expected);
     }
 }
