@@ -196,22 +196,20 @@ impl SSA {
                 let header_label = self.new_label("loop_header");
                 let body_label = self.new_label("loop_body");
                 let exit_label = self.new_label("loop_exit");
+
+                // Get the label of the block immediately preceding the loop header.
                 let pre_header_label = self
-                    .instructions
-                    .iter()
-                    .rfind(|i| matches!(i, Instr::Label(_)))
-                    .cloned()
-                    .expect("no previous label, aborting");
+                    .cfg
+                    .current_block
+                    .clone()
+                    .expect("Current block must be set before a while loop");
 
-                let pre_header_label = match pre_header_label {
-                    Instr::Label(s) => s,
-                    _ => unreachable!(),
-                };
-
-                // 2. Start Header Block
+                // 2. Start Header Block in CFG & Add Edge from Predecessor
                 self.cfg.start_block(&header_label);
                 self.cfg.add_edge(&pre_header_label, &header_label);
+                self.cfg.current_block = Some(header_label.clone()); // Update current block
 
+                // Emit the label instruction
                 self.emit(Instr::Label(header_label.clone()));
 
                 let outer_scope_vars = self
@@ -254,30 +252,66 @@ impl SSA {
                     body_label.clone(),
                     exit_label.clone(),
                 ));
+
+                // --- Ensure target blocks exist before adding edges ---
+                self.cfg.start_block(&body_label); // Create body block
+                self.cfg.start_block(&exit_label); // Create exit block
+                // --- Now add edges from header ---
                 self.cfg.add_edge(&header_label, &body_label);
                 self.cfg.add_edge(&header_label, &exit_label);
 
-                // 7. Start Body Block
-                self.cfg.start_block(&body_label);
+                // 7. Set current block to Body Block & Emit Label
+                self.cfg.current_block = Some(body_label.clone());
                 self.emit(Instr::Label(body_label.clone()));
 
-                // 8. Execute Loop Body (uses the same loop scope)
-                self.stmt_to_ir(body);
+                // 8. Execute Loop Body statements directly in the current loop scope.
+                //    Avoid creating an extra nested scope if the body is a block.
+                match body.as_ref() {
+                    Stmt::Block { statements } => {
+                        for stmt in statements {
+                            self.stmt_to_ir(stmt);
+                        }
+                    }
+                    _ => {
+                        // If the body is not a block, execute it directly.
+                        self.stmt_to_ir(body);
+                    }
+                }
 
-                // 9. Collect Final Variable Values from End of Body Scope
-                // This scope contains results of body execution.
-                let body_end_scope = self.scopes.last().cloned().unwrap_or_default();
+                // 9. Resolve variable values at the end of the body for Phi patching
+                let mut resolved_back_edge_values = HashMap::new();
+                for var_name in outer_scope_vars.keys() {
+                    // Use resolve_variable to find the current SSA name at the end of the body
+                    if let Some(resolved_ssa_name) = self.resolve_variable(var_name) {
+                         resolved_back_edge_values.insert(var_name.clone(), resolved_ssa_name.clone());
+                    } else {
+                        // This case might indicate an issue, or perhaps the variable
+                        // was introduced *only* within the loop body, which phi nodes
+                        // based on outer_scope_vars wouldn't handle anyway.
+                        // For now, let's report it, but maybe a different handling is needed.
+                         eprintln!("Warning: Variable '{}' from outer scope not found at loop body end for Phi patching.", var_name);
+                         // If the variable was originally from outer scope, we might need
+                         // to use its initial phi value as fallback, but resolve_variable should find it
+                         // if it was ever assigned. Let's use the phi name itself as a placeholder for now.
+                         if let Some((phi_ssa_name, _, _)) = phi_data.get(var_name) {
+                            resolved_back_edge_values.insert(var_name.clone(), phi_ssa_name.clone());
+                         }
+                    }
+                }
 
-                // 10. Prepare Phi Patches (collect info needed)
+                // 10. Prepare Phi Patches (use resolved values)
                 let mut patches = vec![];
                 for (var_name, (phi_ssa_name, _, instr_idx)) in &phi_data {
-                    // Find the SSA name for var_name at the end of the body.
-                    // If it wasn't modified in the body, its value is the phi result itself.
-                    let body_end_val = body_end_scope
+                    // Use the resolved value from the end of the body.
+                    // Fallback to the phi_ssa_name itself if resolution failed (as per warning above).
+                    let back_edge_val = resolved_back_edge_values
                         .get(var_name)
                         .cloned()
-                        .unwrap_or_else(|| phi_ssa_name.clone());
-                    patches.push((*instr_idx, body_label.clone(), body_end_val));
+                        .unwrap_or_else(|| {
+                             eprintln!("Warning: Using phi SSA name '{}' as fallback for back-edge value of '{}'.", phi_ssa_name, var_name);
+                             phi_ssa_name.clone() // Fallback, though resolve should ideally work.
+                        });
+                    patches.push((*instr_idx, body_label.clone(), back_edge_val));
                 }
 
                 // 11. Jump from Body back to Header
@@ -298,9 +332,9 @@ impl SSA {
                     }
                 }
 
-                // 13. Start Exit Block
+                // 13. Set current block to Exit Block & Emit Label
                 self.exit_scope(); // Exit the main loop scope
-                self.cfg.start_block(&exit_label);
+                self.cfg.current_block = Some(exit_label.clone()); // Update current block for exit path
                 self.emit(Instr::Label(exit_label.clone()));
                 self.enter_scope(); // Enter scope for code after the loop
 
@@ -493,10 +527,11 @@ impl SSA {
                 let rhs_temp = self.expr_to_ir(&expr);
                 let var_name = name.lexeme.clone();
 
-                let ssa_name = self.new_temp();
-                self.assign_variable(&var_name, &ssa_name);
-                self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
-                ssa_name
+                // Variable declaration simply associates the name with the initializer's value
+                self.assign_variable(&var_name, &rhs_temp);
+                // A var declaration statement doesn't really have a "value",
+                // but we return the initializer's temp in case it's needed.
+                rhs_temp
             }
             stmt => panic!("Statement not supported: {stmt:?}"),
         }
@@ -566,19 +601,19 @@ impl SSA {
                 };
                 temp
             }
-            Expr::Assign { name, value } => {
-                let rhs_temp = self.expr_to_ir(value);
-                let var_name = name.lexeme.clone();
-                let ssa_name = self.new_temp();
-                self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
-                self.assign_variable(&var_name, &ssa_name);
-
-                ssa_name
-            }
             Expr::Variable { name } => match self.resolve_variable(&name.lexeme) {
                 Some(ssa_name) => ssa_name.clone(),
                 None => panic!("Variable called before definition {}", name.lexeme),
             },
+            Expr::Assign { name, value } => {
+                let rhs_temp = self.expr_to_ir(value);
+                let var_name = name.lexeme.clone();
+                // Assigning a variable just means updating the scope map
+                // to point the variable name to the SSA temp of the value.
+                self.assign_variable(&var_name, &rhs_temp);
+                // The "result" of an assignment expression is the value assigned.
+                rhs_temp
+            }
             e => panic!("Unsupported expr: {e:?}"),
         }
     }

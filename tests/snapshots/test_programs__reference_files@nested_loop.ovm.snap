@@ -1,0 +1,26 @@
+---
+source: tests/test_programs.rs
+expression: test_output
+input_file: tests/programs/nested_loop.ovm
+---
+status: 0
+stdout:
+  - "0"
+  - "0"
+  - "0"
+  - "1"
+  - "0"
+  - "2"
+  - "1"
+  - "0"
+  - "1"
+  - "1"
+  - "1"
+  - "2"
+  - "2"
+  - "0"
+  - "2"
+  - "1"
+  - "2"
+  - "2"
+stderr: []
