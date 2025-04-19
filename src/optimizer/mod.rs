@@ -203,15 +203,15 @@ impl SSA {
                     .cloned()
                     .expect("no previous label, aborting");
 
-                let previous_label = match pre_header_label {
+                let pre_header_label = match pre_header_label {
                     Instr::Label(s) => s,
                     _ => unreachable!(),
                 };
 
-                // TODO: self.cfg.add_edge(&pre_header_label, &header_label);
-
                 // 2. Start Header Block
-                // self.cfg.current_block = Some(header_label.clone());
+                self.cfg.start_block(&header_label);
+                self.cfg.add_edge(&pre_header_label, &header_label);
+
                 self.emit(Instr::Label(header_label.clone()));
 
                 let outer_scope_vars = self
@@ -232,7 +232,7 @@ impl SSA {
                         phi_ssa_name.clone(),
                         vec![
                             // Edge from pre-header
-                            (previous_label.clone(), outer_ssa_name.clone()), // Back-edge from body will be added later by patching
+                            (pre_header_label.clone(), outer_ssa_name.clone()), // Back-edge from body will be added later by patching
                         ],
                     );
                     let instr_idx = self.instructions.len();
@@ -254,34 +254,22 @@ impl SSA {
                     body_label.clone(),
                     exit_label.clone(),
                 ));
-                // TODO: self.cfg.add_edge(&header_label, &body_label);
-                // TODO: self.cfg.add_edge(&header_label, &exit_label);
+                self.cfg.add_edge(&header_label, &body_label);
+                self.cfg.add_edge(&header_label, &exit_label);
 
                 // 7. Start Body Block
-                // TODO: self.cfg.current_block = Some(body_label.clone());
+                self.cfg.start_block(&body_label);
                 self.emit(Instr::Label(body_label.clone()));
 
                 // 8. Execute Loop Body (uses the same loop scope)
-                match &**body {
-                    Stmt::Block { statements } => {
-                        for stmt in statements {
-                            self.stmt_to_ir(stmt);
-                        }
-                        self.new_temp()
-                    }
-                    _ => {
-                        // If the body is not a block, execute it normally
-                        // It might contain blocks internally, which will handle their own scopes
-                        self.stmt_to_ir(body) // Pass the original Box<Stmt>
-                    }
-                };
+                self.stmt_to_ir(body);
 
                 // 9. Collect Final Variable Values from End of Body Scope
                 // This scope contains results of body execution.
                 let body_end_scope = self.scopes.last().cloned().unwrap_or_default();
 
                 // 10. Prepare Phi Patches (collect info needed)
-                let mut patches = Vec::new(); // Vec<(instr_idx, block_label, ssa_name)>
+                let mut patches = vec![];
                 for (var_name, (phi_ssa_name, _, instr_idx)) in &phi_data {
                     // Find the SSA name for var_name at the end of the body.
                     // If it wasn't modified in the body, its value is the phi result itself.
@@ -294,7 +282,7 @@ impl SSA {
 
                 // 11. Jump from Body back to Header
                 self.emit(Instr::Jump(header_label.clone()));
-                // TODO: self.cfg.add_edge(&body_label, &header_label);
+                self.cfg.add_edge(&body_label, &header_label);
 
                 // 12. Apply Phi Patches (Modify the Phi instructions emitted in step 4)
                 // This requires mutable access to self.instructions
@@ -312,7 +300,7 @@ impl SSA {
 
                 // 13. Start Exit Block
                 self.exit_scope(); // Exit the main loop scope
-                // self.cfg.current_block = Some(exit_label.clone());
+                self.cfg.start_block(&exit_label);
                 self.emit(Instr::Label(exit_label.clone()));
                 self.enter_scope(); // Enter scope for code after the loop
 
@@ -370,7 +358,6 @@ impl SSA {
                         )
                     } else {
                         let result = self.new_temp();
-                        self.emit(Instr::Const(result.clone(), 0));
                         (result, self.scopes.last().cloned().unwrap_or_default())
                     };
                     self.emit(Instr::Jump(merge_label.clone()));
@@ -509,7 +496,6 @@ impl SSA {
                 let ssa_name = self.new_temp();
                 self.assign_variable(&var_name, &ssa_name);
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
-                self.assign_variable(&var_name, &ssa_name);
                 ssa_name
             }
             stmt => panic!("Statement not supported: {stmt:?}"),
@@ -584,10 +570,7 @@ impl SSA {
                 let rhs_temp = self.expr_to_ir(value);
                 let var_name = name.lexeme.clone();
                 let ssa_name = self.new_temp();
-                self.assign_variable(&var_name, &ssa_name);
-
                 self.emit(Instr::Assign(ssa_name.clone(), rhs_temp));
-
                 self.assign_variable(&var_name, &ssa_name);
 
                 ssa_name
