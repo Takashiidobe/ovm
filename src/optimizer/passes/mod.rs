@@ -6,6 +6,7 @@ pub mod move_coalescing;
 pub mod pass;
 pub mod strength_reduction;
 pub mod identity_elimination;
+pub mod algebraic_simplification;
 
 use crate::optimizer::Instr;
 
@@ -17,6 +18,7 @@ pub use move_coalescing::MoveCoalescing;
 pub use pass::Pass;
 pub use strength_reduction::StrengthReduction;
 pub use identity_elimination::IdentityElimination;
+pub use algebraic_simplification::AlgebraicSimplification;
 
 /// Available optimization passes
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +30,7 @@ pub enum PassType {
     BranchElimination,
     StrengthReduction,
     IdentityElimination,
+    AlgebraicSimplification,
 }
 
 /// The main optimizer that runs optimization passes
@@ -42,6 +45,7 @@ impl Optimizer {
         let mc = MoveCoalescing;
         let sr = StrengthReduction;
         let ie = IdentityElimination;
+        let algs = AlgebraicSimplification;
         let gvn = GlobalValueNumbering;
 
         let mut current_instrs = instrs;
@@ -53,6 +57,7 @@ impl Optimizer {
             current_instrs = cf.optimize(current_instrs);
             current_instrs = mc.optimize(current_instrs);
             current_instrs = ie.optimize(current_instrs);
+            current_instrs = algs.optimize(current_instrs);
             current_instrs = sr.optimize(current_instrs);
             current_instrs = be.optimize(current_instrs);
             current_instrs = dce.optimize(current_instrs);
@@ -102,6 +107,10 @@ impl Optimizer {
                 }
                 PassType::IdentityElimination => {
                     let pass = IdentityElimination;
+                    result = pass.optimize(result);
+                }
+                PassType::AlgebraicSimplification => {
+                    let pass = AlgebraicSimplification;
                     result = pass.optimize(result);
                 }
             }
