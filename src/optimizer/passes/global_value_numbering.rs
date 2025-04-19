@@ -43,9 +43,11 @@ impl GlobalValueNumbering {
                             }
                             current_var_to_vn.insert(dest.clone(), existing_vn);
                         } else {
-                             // This case should ideally not happen if VN state is consistent,
-                             // but defensively re-emit the const if canonical var lookup fails.
-                            eprintln!("Warning: GVN found VN for Const but no canonical var. Re-emitting.");
+                            // This case should ideally not happen if VN state is consistent,
+                            // but defensively re-emit the const if canonical var lookup fails.
+                            eprintln!(
+                                "Warning: GVN found VN for Const but no canonical var. Re-emitting."
+                            );
                             let vn = *next_vn;
                             *next_vn += 1;
                             global_expr_to_vn.insert(key, vn);
@@ -70,19 +72,24 @@ impl GlobalValueNumbering {
                     {
                         let key = ExprKey::from_binop(*op, vn1, vn2);
                         if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
-                             // Expression result already computed
-                            if let Some(canonical_var) = global_vn_to_canonical_var.get(&existing_vn) {
+                            // Expression result already computed
+                            if let Some(canonical_var) =
+                                global_vn_to_canonical_var.get(&existing_vn)
+                            {
                                 if canonical_var != dest {
-                                    new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
+                                    new_instrs
+                                        .push(Instr::Assign(dest.clone(), canonical_var.clone()));
                                 } else {
                                     // If dest is the canonical var, re-emit original BinOp
-                                     // (Similar reasoning to Const: first encounter in this block processing)
+                                    // (Similar reasoning to Const: first encounter in this block processing)
                                     new_instrs.push(instr.clone());
                                 }
                                 current_var_to_vn.insert(dest.clone(), existing_vn);
                             } else {
                                 // Defensive: canonical var missing
-                                eprintln!("Warning: GVN found VN for BinOp but no canonical var. Re-emitting.");
+                                eprintln!(
+                                    "Warning: GVN found VN for BinOp but no canonical var. Re-emitting."
+                                );
                                 let vn = *next_vn;
                                 *next_vn += 1;
                                 global_expr_to_vn.insert(key, vn);
@@ -100,9 +107,9 @@ impl GlobalValueNumbering {
                             new_instrs.push(instr.clone()); // Keep original BinOp
                         }
                     } else {
-                         // Operands not found in VN map (should not happen in SSA/well-formed IR)
-                         // Fallback: Assign a new VN and keep the original instruction
-                         eprintln!("Warning: GVN operands missing VN for BinOp. Assigning new VN.");
+                        // Operands not found in VN map (should not happen in SSA/well-formed IR)
+                        // Fallback: Assign a new VN and keep the original instruction
+                        eprintln!("Warning: GVN operands missing VN for BinOp. Assigning new VN.");
                         let vn = *next_vn;
                         *next_vn += 1;
                         // We don't add to global_expr_to_vn as we don't know the operand VNs
@@ -113,7 +120,7 @@ impl GlobalValueNumbering {
                 }
                 Instr::Cmp(dest, src1, op, src2) => {
                     // Ensure operands have value numbers
-                     if let (Some(&vn1), Some(&vn2)) =
+                    if let (Some(&vn1), Some(&vn2)) =
                         (current_var_to_vn.get(src1), current_var_to_vn.get(src2))
                     {
                         // Note: Comparison result depends on Op, vn1, vn2.
@@ -121,15 +128,20 @@ impl GlobalValueNumbering {
                         // but could be done if needed (e.g., swapping operands and flipping CmpOp).
                         let key = ExprKey::Cmp(*op, vn1, vn2);
                         if let Some(&existing_vn) = global_expr_to_vn.get(&key) {
-                            if let Some(canonical_var) = global_vn_to_canonical_var.get(&existing_vn) {
+                            if let Some(canonical_var) =
+                                global_vn_to_canonical_var.get(&existing_vn)
+                            {
                                 if canonical_var != dest {
-                                    new_instrs.push(Instr::Assign(dest.clone(), canonical_var.clone()));
+                                    new_instrs
+                                        .push(Instr::Assign(dest.clone(), canonical_var.clone()));
                                 } else {
                                     new_instrs.push(instr.clone()); // Dest is canonical
                                 }
                                 current_var_to_vn.insert(dest.clone(), existing_vn);
                             } else {
-                                eprintln!("Warning: GVN found VN for Cmp but no canonical var. Re-emitting.");
+                                eprintln!(
+                                    "Warning: GVN found VN for Cmp but no canonical var. Re-emitting."
+                                );
                                 let vn = *next_vn;
                                 *next_vn += 1;
                                 global_expr_to_vn.insert(key, vn);
@@ -146,7 +158,7 @@ impl GlobalValueNumbering {
                             new_instrs.push(instr.clone());
                         }
                     } else {
-                         eprintln!("Warning: GVN operands missing VN for Cmp. Assigning new VN.");
+                        eprintln!("Warning: GVN operands missing VN for Cmp. Assigning new VN.");
                         let vn = *next_vn;
                         *next_vn += 1;
                         current_var_to_vn.insert(dest.clone(), vn);
@@ -159,10 +171,12 @@ impl GlobalValueNumbering {
                         current_var_to_vn.insert(dest.clone(), src_vn);
                         // Check if dest == src. If so, the assignment is redundant (could be removed by another pass)
                         if dest != src {
-                             new_instrs.push(instr.clone());
+                            new_instrs.push(instr.clone());
                         }
                     } else {
-                         eprintln!("Warning: GVN source missing VN for Assign. Assigning new VN to dest.");
+                        eprintln!(
+                            "Warning: GVN source missing VN for Assign. Assigning new VN to dest."
+                        );
                         let vn = *next_vn;
                         *next_vn += 1;
                         current_var_to_vn.insert(dest.clone(), vn);
@@ -223,7 +237,7 @@ impl Pass for GlobalValueNumbering {
             if let Instr::Label(label) = instr {
                 if let Some(prev_label) = current_label.take() {
                     if !current_instrs.is_empty() {
-                        let last_instr_is_terminator = current_instrs.last().map_or(false, |li| {
+                        let last_instr_is_terminator = current_instrs.last().is_some_and(|li| {
                             matches!(li, Instr::Jump(_) | Instr::BranchIf(_, _, _))
                         });
                         if !last_instr_is_terminator {
@@ -244,51 +258,49 @@ impl Pass for GlobalValueNumbering {
                 predecessors.entry(label.clone()).or_default();
                 successors.entry(label.clone()).or_default();
                 current_instrs = vec![instr.clone()];
-            } else {
-                if let Some(ref label) = current_label {
-                    current_instrs.push(instr.clone());
-                    let mut terminated = false;
-                    match instr {
-                        Instr::Jump(target_label) => {
-                            successors
-                                .entry(label.clone())
-                                .or_default()
-                                .push(target_label.clone());
-                            predecessors
-                                .entry(target_label.clone())
-                                .or_default()
-                                .push(label.clone());
-                            terminated = true;
-                        }
-                        Instr::BranchIf(_, true_label, false_label) => {
-                            successors
-                                .entry(label.clone())
-                                .or_default()
-                                .push(true_label.clone());
-                            predecessors
-                                .entry(true_label.clone())
-                                .or_default()
-                                .push(label.clone());
-                            successors
-                                .entry(label.clone())
-                                .or_default()
-                                .push(false_label.clone());
-                            predecessors
-                                .entry(false_label.clone())
-                                .or_default()
-                                .push(label.clone());
-                            terminated = true;
-                        }
-                        _ => {}
+            } else if let Some(ref label) = current_label {
+                current_instrs.push(instr.clone());
+                let mut terminated = false;
+                match instr {
+                    Instr::Jump(target_label) => {
+                        successors
+                            .entry(label.clone())
+                            .or_default()
+                            .push(target_label.clone());
+                        predecessors
+                            .entry(target_label.clone())
+                            .or_default()
+                            .push(label.clone());
+                        terminated = true;
                     }
-                    if terminated {
-                        blocks.insert(label.clone(), current_instrs);
-                        current_label = None;
-                        current_instrs = Vec::new();
+                    Instr::BranchIf(_, true_label, false_label) => {
+                        successors
+                            .entry(label.clone())
+                            .or_default()
+                            .push(true_label.clone());
+                        predecessors
+                            .entry(true_label.clone())
+                            .or_default()
+                            .push(label.clone());
+                        successors
+                            .entry(label.clone())
+                            .or_default()
+                            .push(false_label.clone());
+                        predecessors
+                            .entry(false_label.clone())
+                            .or_default()
+                            .push(label.clone());
+                        terminated = true;
                     }
-                } else {
-                    panic!("Internal error: Instruction processed before first label.");
+                    _ => {}
                 }
+                if terminated {
+                    blocks.insert(label.clone(), current_instrs);
+                    current_label = None;
+                    current_instrs = Vec::new();
+                }
+            } else {
+                panic!("Internal error: Instruction processed before first label.");
             }
         }
         if let Some(label) = current_label {
@@ -476,11 +488,9 @@ impl Pass for GlobalValueNumbering {
         for label in &block_order {
             if let Some(opt_instrs) = optimized_blocks.get(label) {
                 final_instrs.extend(opt_instrs.clone());
-            } else {
-                if let Some(orig_instrs) = blocks.get(label) {
-                    // Fallback if block wasn't optimized (shouldn't happen with this worklist setup)
-                    final_instrs.extend(orig_instrs.clone());
-                }
+            } else if let Some(orig_instrs) = blocks.get(label) {
+                // Fallback if block wasn't optimized (shouldn't happen with this worklist setup)
+                final_instrs.extend(orig_instrs.clone());
             }
         }
         final_instrs

@@ -44,68 +44,74 @@ impl Pass for StrengthReduction {
 
                     match op {
                         Op::Mul => {
-
                             let mut handled_mul = false; // Flag to track if multiplication was handled
 
                             // --- Optimization: Multiplication by Constant ---
 
                             // Helper function to generate the shift-and-add sequence
-                            let generate_shift_add = |optimized_instrs: &mut Vec<Instr>, dest: &String, x: &String, c: i64| {
-                                let mut exponents = Vec::new();
-                                for k in 0..63 { // Check bits 0 to 62
-                                    if (c >> k) & 1 == 1 {
-                                        exponents.push(k as u32);
+                            let generate_shift_add =
+                                |optimized_instrs: &mut Vec<Instr>,
+                                 dest: &String,
+                                 x: &String,
+                                 c: i64| {
+                                    let mut exponents = Vec::new();
+                                    for k in 0..63 {
+                                        // Check bits 0 to 62
+                                        if (c >> k) & 1 == 1 {
+                                            exponents.push(k as u32);
+                                        }
                                     }
-                                }
 
-                                if exponents.is_empty() { // Should not happen if c > 0
-                                    return false;
-                                }
+                                    if exponents.is_empty() {
+                                        // Should not happen if c > 0
+                                        return false;
+                                    }
 
-                                let mut last_sum_reg = String::new();
-                                let mut is_first_term = true;
+                                    let mut last_sum_reg = String::new();
+                                    let mut is_first_term = true;
 
-                                for (i, &k) in exponents.iter().enumerate() {
-                                    // 1. Create shift amount constant
-                                    let shift_amount_reg = format!("{}_shift_{}", dest, k);
-                                    optimized_instrs.push(Instr::Const(shift_amount_reg.clone(), k as i64));
+                                    for (i, &k) in exponents.iter().enumerate() {
+                                        // 1. Create shift amount constant
+                                        let shift_amount_reg = format!("{}_shift_{}", dest, k);
+                                        optimized_instrs
+                                            .push(Instr::Const(shift_amount_reg.clone(), k as i64));
 
-                                    // 2. Perform the shift: x << k
-                                    let shl_temp = if is_first_term && exponents.len() == 1 {
-                                        // If only one term, result goes directly to dest
-                                        dest.clone()
-                                    } else {
-                                        format!("{}_shl_{}", dest, k)
-                                    };
-                                    optimized_instrs.push(Instr::BinOp(
-                                        shl_temp.clone(),
-                                        x.clone(),
-                                        Op::Shl,
-                                        shift_amount_reg,
-                                    ));
-
-                                    // 3. Add to the sum
-                                    if is_first_term {
-                                        last_sum_reg = shl_temp;
-                                        is_first_term = false;
-                                    } else {
-                                        let current_sum_reg = if i == exponents.len() - 1 {
-                                            // Last term addition writes to final dest
+                                        // 2. Perform the shift: x << k
+                                        let shl_temp = if is_first_term && exponents.len() == 1 {
+                                            // If only one term, result goes directly to dest
                                             dest.clone()
                                         } else {
-                                            format!("{}_sum_{}", dest, i)
+                                            format!("{}_shl_{}", dest, k)
                                         };
                                         optimized_instrs.push(Instr::BinOp(
-                                            current_sum_reg.clone(),
-                                            last_sum_reg,
-                                            Op::Add,
-                                            shl_temp,
+                                            shl_temp.clone(),
+                                            x.clone(),
+                                            Op::Shl,
+                                            shift_amount_reg,
                                         ));
-                                        last_sum_reg = current_sum_reg;
+
+                                        // 3. Add to the sum
+                                        if is_first_term {
+                                            last_sum_reg = shl_temp;
+                                            is_first_term = false;
+                                        } else {
+                                            let current_sum_reg = if i == exponents.len() - 1 {
+                                                // Last term addition writes to final dest
+                                                dest.clone()
+                                            } else {
+                                                format!("{}_sum_{}", dest, i)
+                                            };
+                                            optimized_instrs.push(Instr::BinOp(
+                                                current_sum_reg.clone(),
+                                                last_sum_reg,
+                                                Op::Add,
+                                                shl_temp,
+                                            ));
+                                            last_sum_reg = current_sum_reg;
+                                        }
                                     }
-                                }
-                                true // Indicate success
-                            };
+                                    true // Indicate success
+                                };
 
                             // Check right operand first
                             if let Some(&rv) = right_val {
@@ -115,13 +121,17 @@ impl Pass for StrengthReduction {
                                     handled_mul = true;
                                 } else if rv == 1 {
                                     // Optimization: x * 1 => x
-                                    optimized_instrs.push(Instr::Assign(dest.clone(), left.clone()));
+                                    optimized_instrs
+                                        .push(Instr::Assign(dest.clone(), left.clone()));
                                     handled_mul = true;
                                 } else if rv > 1 {
                                     if let Some(exponent) = Self::get_power_of_two_exponent(rv) {
                                         // Optimization: x * 2^k => x << k
                                         let shift_amount_reg = format!("{}_shift_amt", dest);
-                                        optimized_instrs.push(Instr::Const(shift_amount_reg.clone(), exponent as i64));
+                                        optimized_instrs.push(Instr::Const(
+                                            shift_amount_reg.clone(),
+                                            exponent as i64,
+                                        ));
                                         optimized_instrs.push(Instr::BinOp(
                                             dest.clone(),
                                             left.clone(),
@@ -131,7 +141,12 @@ impl Pass for StrengthReduction {
                                         handled_mul = true;
                                     } else {
                                         // Optimization: x * c => shift and add
-                                        handled_mul = generate_shift_add(&mut optimized_instrs, dest, left, rv);
+                                        handled_mul = generate_shift_add(
+                                            &mut optimized_instrs,
+                                            dest,
+                                            left,
+                                            rv,
+                                        );
                                     }
                                 }
                             }
@@ -139,19 +154,24 @@ impl Pass for StrengthReduction {
                             // If not handled, check left operand (commutative)
                             if !handled_mul {
                                 if let Some(&lv) = left_val {
-                                     if lv == 0 {
+                                    if lv == 0 {
                                         // Optimization: 0 * x => 0
                                         optimized_instrs.push(Instr::Const(dest.clone(), 0));
                                         handled_mul = true;
                                     } else if lv == 1 {
                                         // Optimization: 1 * x => x
-                                        optimized_instrs.push(Instr::Assign(dest.clone(), right.clone()));
+                                        optimized_instrs
+                                            .push(Instr::Assign(dest.clone(), right.clone()));
                                         handled_mul = true;
                                     } else if lv > 1 {
-                                        if let Some(exponent) = Self::get_power_of_two_exponent(lv) {
+                                        if let Some(exponent) = Self::get_power_of_two_exponent(lv)
+                                        {
                                             // Optimization: 2^k * x => x << k
                                             let shift_amount_reg = format!("{}_shift_amt", dest);
-                                            optimized_instrs.push(Instr::Const(shift_amount_reg.clone(), exponent as i64));
+                                            optimized_instrs.push(Instr::Const(
+                                                shift_amount_reg.clone(),
+                                                exponent as i64,
+                                            ));
                                             optimized_instrs.push(Instr::BinOp(
                                                 dest.clone(),
                                                 right.clone(), // Shift the variable part
@@ -161,7 +181,12 @@ impl Pass for StrengthReduction {
                                             handled_mul = true;
                                         } else {
                                             // Optimization: c * x => shift and add
-                                            handled_mul = generate_shift_add(&mut optimized_instrs, dest, right, lv);
+                                            handled_mul = generate_shift_add(
+                                                &mut optimized_instrs,
+                                                dest,
+                                                right,
+                                                lv,
+                                            );
                                         }
                                     }
                                 }
@@ -196,8 +221,7 @@ impl Pass for StrengthReduction {
                                 // x % (2^exponent) => x & ((2^exponent) - 1)
                                 let mask_val = (1i64 << exponent) - 1;
                                 let mask_reg = format!("{}_mask", dest);
-                                optimized_instrs
-                                    .push(Instr::Const(mask_reg.clone(), mask_val));
+                                optimized_instrs.push(Instr::Const(mask_reg.clone(), mask_val));
                                 optimized_instrs.push(Instr::BinOp(
                                     dest.clone(),
                                     left.clone(),
@@ -475,7 +499,7 @@ mod tests {
             Instr::Const("t0".to_string(), 5),
             Instr::Const("t1".to_string(), 10),
             // Shift for bit 1 (k=1)
-            Instr::Const("t2_shift_1".to_string(), 1), 
+            Instr::Const("t2_shift_1".to_string(), 1),
             Instr::BinOp(
                 "t2_shl_1".to_string(), // Intermediate result for x << 1
                 "t0".to_string(),

@@ -56,17 +56,25 @@ mod tests {
             Instr::Label("entry".to_string()),
             Instr::Const("t0".to_string(), 10),
             Instr::Assign("t1".to_string(), "t0".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Add, "t0".to_string()),
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Add,
+                "t0".to_string(),
+            ),
             Instr::Print("t2".to_string()),
         ];
         let pass = IdentityElimination;
         let original_instrs = instrs.clone(); // Clone before moving
         let optimized = pass.optimize(instrs);
 
-        assert_eq!(optimized, original_instrs, "Should not change if no identity assigns exist");
+        assert_eq!(
+            optimized, original_instrs,
+            "Should not change if no identity assigns exist"
+        );
     }
 
-     #[test]
+    #[test]
     fn test_multiple_identity_assigns() {
         let instrs = vec![
             Instr::Assign("a".to_string(), "a".to_string()), // Remove
@@ -90,7 +98,7 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 
-     #[test]
+    #[test]
     fn test_empty_input() {
         let instrs: Vec<Instr> = vec![];
         let pass = IdentityElimination;
@@ -98,4 +106,4 @@ mod tests {
         let expected: Vec<Instr> = vec![];
         assert_eq!(optimized, expected);
     }
-} 
+}

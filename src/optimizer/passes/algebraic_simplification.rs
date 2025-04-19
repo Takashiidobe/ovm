@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::optimizer::{Instr, Op};
 use crate::optimizer::passes::pass::Pass;
+use crate::optimizer::{Instr, Op};
 
 /// Algebraic Simplification Pass
 ///
@@ -12,7 +12,6 @@ use crate::optimizer::passes::pass::Pass;
 /// - x * 0 => 0
 /// - x - x => 0
 pub struct AlgebraicSimplification;
-
 
 impl Pass for AlgebraicSimplification {
     fn optimize(&self, instrs: Vec<Instr>) -> Vec<Instr> {
@@ -32,40 +31,49 @@ impl Pass for AlgebraicSimplification {
 
                     match op {
                         Op::Add => {
-                            if right_val == Some(0) { // x + 0 => x
+                            if right_val == Some(0) {
+                                // x + 0 => x
                                 simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
-                            } else if left_val == Some(0) { // 0 + x => x
+                            } else if left_val == Some(0) {
+                                // 0 + x => x
                                 simplified_instr = Some(Instr::Assign(dest.clone(), right.clone()));
                             }
                         }
                         Op::Sub => {
-                           if right_val == Some(0) { // x - 0 => x
+                            if right_val == Some(0) {
+                                // x - 0 => x
                                 simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
-                            } else if left == right { // x - x => 0
+                            } else if left == right {
+                                // x - x => 0
                                 simplified_instr = Some(Instr::Const(dest.clone(), 0));
                             }
-                           // Note: 0 - x cannot be simplified further here easily
+                            // Note: 0 - x cannot be simplified further here easily
                         }
                         Op::Mul => {
-                            if right_val == Some(1) { // x * 1 => x
+                            if right_val == Some(1) {
+                                // x * 1 => x
                                 simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
-                            } else if left_val == Some(1) { // 1 * x => x
+                            } else if left_val == Some(1) {
+                                // 1 * x => x
                                 simplified_instr = Some(Instr::Assign(dest.clone(), right.clone()));
-                            } else if right_val == Some(0) || left_val == Some(0) { // x * 0 or 0 * x => 0
+                            } else if right_val == Some(0) || left_val == Some(0) {
+                                // x * 0 or 0 * x => 0
                                 simplified_instr = Some(Instr::Const(dest.clone(), 0));
                             }
                         }
                         Op::Div => {
-                             if right_val == Some(1) { // x / 1 => x
+                            if right_val == Some(1) {
+                                // x / 1 => x
                                 simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
                             }
                             // Note: 0 / x => 0 requires x != 0, hard to guarantee here.
                             // Note: x / x => 1 requires x != 0.
                         }
-                        Op::Shl | Op::Shr => { // x << 0 => x, x >> 0 => x
-                             if right_val == Some(0) {
+                        Op::Shl | Op::Shr => {
+                            // x << 0 => x, x >> 0 => x
+                            if right_val == Some(0) {
                                 simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
-                             }
+                            }
                         }
                         // No algebraic simplifications for BitAnd, BitOr, And, Or implemented
                         _ => {}
@@ -76,13 +84,13 @@ impl Pass for AlgebraicSimplification {
                         if let Instr::Const(_, val) = &simplified {
                             constants.insert(dest.clone(), *val);
                         } else if let Instr::Assign(_, src) = &simplified {
-                             if let Some(&val) = constants.get(src) {
+                            if let Some(&val) = constants.get(src) {
                                 constants.insert(dest.clone(), val);
                             } else {
                                 constants.remove(dest);
                             }
                         } else {
-                             constants.remove(dest);
+                            constants.remove(dest);
                         }
                         optimized_instrs.push(simplified);
                     } else {
@@ -91,8 +99,8 @@ impl Pass for AlgebraicSimplification {
                         optimized_instrs.push(instr.clone());
                     }
                 }
-                 Instr::Assign(ref dest, ref src) => {
-                     // Propagate constants through assignments
+                Instr::Assign(ref dest, ref src) => {
+                    // Propagate constants through assignments
                     if let Some(&val) = constants.get(src) {
                         constants.insert(dest.clone(), val);
                     } else {
@@ -121,15 +129,14 @@ impl Pass for AlgebraicSimplification {
 // Helper (can be shared or duplicated from other passes)
 fn get_defined_register(instr: &Instr) -> Option<String> {
     match instr {
-        Instr::Const(d, _) |
-        Instr::BinOp(d, _, _, _) |
-        Instr::Cmp(d, _, _, _) |
-        Instr::Phi(d, _) |
-        Instr::Assign(d, _) => Some(d.clone()),
+        Instr::Const(d, _)
+        | Instr::BinOp(d, _, _, _)
+        | Instr::Cmp(d, _, _, _)
+        | Instr::Phi(d, _)
+        | Instr::Assign(d, _) => Some(d.clone()),
         _ => None,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -141,7 +148,12 @@ mod tests {
         let instrs = vec![
             Instr::Const("c0".to_string(), 0),
             Instr::Assign("t1".to_string(), "x".to_string()), // Assume x is defined
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Add, "c0".to_string()), // t2 = t1 + 0
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Add,
+                "c0".to_string(),
+            ), // t2 = t1 + 0
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -153,12 +165,17 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 
-     #[test]
+    #[test]
     fn test_zero_add() {
         let instrs = vec![
             Instr::Const("c0".to_string(), 0),
             Instr::Assign("t1".to_string(), "x".to_string()), // Assume x is defined
-            Instr::BinOp("t2".to_string(), "c0".to_string(), Op::Add, "t1".to_string()), // t2 = 0 + t1
+            Instr::BinOp(
+                "t2".to_string(),
+                "c0".to_string(),
+                Op::Add,
+                "t1".to_string(),
+            ), // t2 = 0 + t1
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -175,7 +192,12 @@ mod tests {
         let instrs = vec![
             Instr::Const("c0".to_string(), 0),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Sub, "c0".to_string()), // t2 = t1 - 0
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Sub,
+                "c0".to_string(),
+            ), // t2 = t1 - 0
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -187,11 +209,16 @@ mod tests {
         assert_eq!(optimized, expected);
     }
 
-     #[test]
+    #[test]
     fn test_sub_self() {
         let instrs = vec![
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Sub, "t1".to_string()), // t2 = t1 - t1
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Sub,
+                "t1".to_string(),
+            ), // t2 = t1 - t1
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -207,7 +234,12 @@ mod tests {
         let instrs = vec![
             Instr::Const("c1".to_string(), 1),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Mul, "c1".to_string()), // t2 = t1 * 1
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Mul,
+                "c1".to_string(),
+            ), // t2 = t1 * 1
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -221,10 +253,15 @@ mod tests {
 
     #[test]
     fn test_one_mul() {
-         let instrs = vec![
+        let instrs = vec![
             Instr::Const("c1".to_string(), 1),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "c1".to_string(), Op::Mul, "t1".to_string()), // t2 = 1 * t1
+            Instr::BinOp(
+                "t2".to_string(),
+                "c1".to_string(),
+                Op::Mul,
+                "t1".to_string(),
+            ), // t2 = 1 * t1
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -241,7 +278,12 @@ mod tests {
         let instrs = vec![
             Instr::Const("c0".to_string(), 0),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Mul, "c0".to_string()), // t2 = t1 * 0
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Mul,
+                "c0".to_string(),
+            ), // t2 = t1 * 0
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -258,7 +300,12 @@ mod tests {
         let instrs = vec![
             Instr::Const("c0".to_string(), 0),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "c0".to_string(), Op::Mul, "t1".to_string()), // t2 = 0 * t1
+            Instr::BinOp(
+                "t2".to_string(),
+                "c0".to_string(),
+                Op::Mul,
+                "t1".to_string(),
+            ), // t2 = 0 * t1
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -275,7 +322,12 @@ mod tests {
         let instrs = vec![
             Instr::Const("c1".to_string(), 1),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Div, "c1".to_string()), // t2 = t1 / 1
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Div,
+                "c1".to_string(),
+            ), // t2 = t1 / 1
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -292,8 +344,18 @@ mod tests {
         let instrs = vec![
             Instr::Const("c0".to_string(), 0),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Shl, "c0".to_string()), // t2 = t1 << 0
-            Instr::BinOp("t3".to_string(), "t1".to_string(), Op::Shr, "c0".to_string()), // t3 = t1 >> 0
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Shl,
+                "c0".to_string(),
+            ), // t2 = t1 << 0
+            Instr::BinOp(
+                "t3".to_string(),
+                "t1".to_string(),
+                Op::Shr,
+                "c0".to_string(),
+            ), // t3 = t1 >> 0
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -311,7 +373,12 @@ mod tests {
         let instrs = vec![
             Instr::Const("c2".to_string(), 2),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Add, "c2".to_string()),
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Add,
+                "c2".to_string(),
+            ),
         ];
         let pass = AlgebraicSimplification;
         let original_instrs = instrs.clone();
@@ -321,12 +388,17 @@ mod tests {
 
     #[test]
     fn test_simplification_constant_propagation() {
-         // Test that simplification works when constant comes via Assign
-         let instrs = vec![
+        // Test that simplification works when constant comes via Assign
+        let instrs = vec![
             Instr::Const("c0".to_string(), 0),
             Instr::Assign("zero".to_string(), "c0".to_string()),
             Instr::Assign("t1".to_string(), "x".to_string()),
-            Instr::BinOp("t2".to_string(), "t1".to_string(), Op::Add, "zero".to_string()), // t2 = t1 + zero (0)
+            Instr::BinOp(
+                "t2".to_string(),
+                "t1".to_string(),
+                Op::Add,
+                "zero".to_string(),
+            ), // t2 = t1 + zero (0)
         ];
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(instrs);
@@ -338,5 +410,4 @@ mod tests {
         ];
         assert_eq!(optimized, expected);
     }
-
-} 
+}

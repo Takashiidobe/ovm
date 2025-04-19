@@ -1,29 +1,32 @@
+pub mod algebraic_simplification;
 pub mod branch_elimination;
 pub mod constant_folding;
+pub mod copy_propagation;
 pub mod dead_code_elimination;
 pub mod global_value_numbering;
+pub mod identity_elimination;
 pub mod move_coalescing;
 pub mod pass;
 pub mod strength_reduction;
-pub mod identity_elimination;
-pub mod algebraic_simplification;
 
 use crate::optimizer::Instr;
 
+pub use algebraic_simplification::AlgebraicSimplification;
 pub use branch_elimination::BranchElimination;
 pub use constant_folding::ConstantFolding;
+pub use copy_propagation::CopyPropagation;
 pub use dead_code_elimination::DeadCodeElimination;
 pub use global_value_numbering::GlobalValueNumbering;
+pub use identity_elimination::IdentityElimination;
 pub use move_coalescing::MoveCoalescing;
 pub use pass::Pass;
 pub use strength_reduction::StrengthReduction;
-pub use identity_elimination::IdentityElimination;
-pub use algebraic_simplification::AlgebraicSimplification;
 
 /// Available optimization passes
 #[derive(Debug, Clone, Copy)]
 pub enum PassType {
     ConstantFolding,
+    CopyPropagation,
     DeadCodeElimination,
     GlobalValueNumbering,
     MoveCoalescing,
@@ -47,6 +50,7 @@ impl Optimizer {
         let ie = IdentityElimination;
         let algs = AlgebraicSimplification;
         let gvn = GlobalValueNumbering;
+        let cp = CopyPropagation;
 
         let mut current_instrs = instrs;
 
@@ -68,8 +72,9 @@ impl Optimizer {
             }
         }
 
-        // Run GVN and a final DCE pass after the loop stabilizes
+        // Run GVN, Copy Propagation, and a final DCE pass after the loop stabilizes
         current_instrs = gvn.optimize(current_instrs);
+        current_instrs = cp.optimize(current_instrs);
         current_instrs = dce.optimize(current_instrs);
 
         current_instrs
@@ -83,6 +88,10 @@ impl Optimizer {
             match pass_type {
                 PassType::ConstantFolding => {
                     let pass = ConstantFolding;
+                    result = pass.optimize(result);
+                }
+                PassType::CopyPropagation => {
+                    let pass = CopyPropagation;
                     result = pass.optimize(result);
                 }
                 PassType::DeadCodeElimination => {

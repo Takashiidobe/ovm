@@ -177,8 +177,7 @@ impl Pass for DeadCodeElimination {
                         // Find the label of the block starting exactly at the fallthrough position
                         if let Some(fallthrough_label) = instr_to_label.get(end) {
                             if blocks
-                                .get(fallthrough_label)
-                                .map_or(false, |(s, _)| *s == *end)
+                                .get(fallthrough_label).is_some_and(|(s, _)| *s == *end)
                             {
                                 add_target(fallthrough_label);
                             }
