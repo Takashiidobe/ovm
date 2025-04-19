@@ -44,6 +44,7 @@ pub enum Op {
     And,
     Or,
     Shl,
+    Mod,
     Shr,
 }
 
@@ -549,6 +550,7 @@ impl SSA {
                     TokenType::Minus => self.emit(Instr::BinOp(temp.clone(), l, Op::Sub, r)),
                     TokenType::Star => self.emit(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
                     TokenType::Slash => self.emit(Instr::BinOp(temp.clone(), l, Op::Div, r)),
+                    TokenType::Modulo => self.emit(Instr::BinOp(temp.clone(), l, Op::Mod, r)),
                     TokenType::LeftShift => self.emit(Instr::BinOp(temp.clone(), l, Op::Shl, r)),
                     TokenType::RightShift => self.emit(Instr::BinOp(temp.clone(), l, Op::Shr, r)),
                     TokenType::BitAnd => self.emit(Instr::BinOp(temp.clone(), l, Op::BitAnd, r)),

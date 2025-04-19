@@ -403,7 +403,7 @@ impl Parser {
     fn factor(&mut self) -> Result<Expr, Error> {
         let mut expr = self.unary()?;
 
-        while self.r#match(&[TokenType::Slash, TokenType::Star]) {
+        while self.r#match(&[TokenType::Slash, TokenType::Star, TokenType::Modulo]) {
             let operator = self.previous();
             let right = self.unary()?;
             expr = Expr::Binary {

@@ -60,6 +60,7 @@ impl<'a> Vm<'a> {
                         Op::Shr => lval >> rval,
                         Op::BitAnd | Op::And => lval & rval, // Treat logical and bitwise AND similarly for i64
                         Op::BitOr | Op::Or => lval | rval, // Treat logical and bitwise OR similarly for i64
+                        Op::Mod => lval % rval,
                     };
                     self.variables.insert(dest.clone(), result);
                     1 // Cycle cost

@@ -107,6 +107,12 @@ impl Backend for Codegen {
                             self.add(format!("idivq {}", r));
                             self.add(format!("movq %rax, {}", d));
                         }
+                        Op::Mod => {
+                            self.add(format!("movq {}, %rax", l));
+                            self.add("cqto");
+                            self.add(format!("idivq {}", r));
+                            self.add(format!("movq %rdx, {}", d));
+                        }
                         _ => {
                             self.add(format!("movq {}, %rax", l));
                             let op_instr = match op {

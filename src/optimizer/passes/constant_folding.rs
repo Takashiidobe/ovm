@@ -36,6 +36,7 @@ impl Pass for ConstantFolding {
                                 Op::Or => (lv > 0 || rv > 0) as i64,
                                 Op::Shl => lv << rv,
                                 Op::Shr => lv >> rv,
+                                Op::Mod => lv % rv,
                             };
                             constants.insert(dest.clone(), result);
                             new_instrs.push(Instr::Const(dest, result));

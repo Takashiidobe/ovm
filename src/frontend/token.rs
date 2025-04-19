@@ -25,6 +25,7 @@ pub enum TokenType {
     Bang,
     BangEqual,
     Equal,
+    Modulo,
     EqualEqual,
     Greater,
     GreaterEqual,
@@ -122,6 +123,7 @@ impl fmt::Display for Token {
             (TokenType::BitAnd, _) => "&".to_string(),
             (TokenType::LeftShift, _) => "<<".to_string(),
             (TokenType::RightShift, _) => ">>".to_string(),
+            (TokenType::Modulo, _) => "%".to_string(),
         };
 
         f.write_str(&val)
