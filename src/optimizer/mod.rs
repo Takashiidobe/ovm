@@ -597,8 +597,7 @@ impl SSA {
 
                 self.assign_variable(&var_name, &rhs_temp);
 
-                if matches!(expr, Expr::Literal { value: Object::Nil }) && !rhs_temp.is_empty() {
-                }
+                if matches!(expr, Expr::Literal { value: Object::Nil }) { !rhs_temp.is_empty(); }
 
                 rhs_temp
             }
@@ -719,12 +718,12 @@ impl SSA {
                 self.cfg.add_edge(&entry_block, &merge_label); // Add edge *after* creation
                 self.cfg.add_edge(&right_eval_final_block, &merge_label); // Add edge *after* creation
                 self.cfg.current_block = Some(merge_label.clone());
-                let result_temp = self.new_temp();
+                
 
                 // --- Phi Node ---
                 // ... (Phi node generation) ...
 
-                result_temp
+                self.new_temp()
             }
             Expr::Variable { name } => match self.resolve_variable(&name.lexeme) {
                 Some(ssa_name) => ssa_name.clone(),

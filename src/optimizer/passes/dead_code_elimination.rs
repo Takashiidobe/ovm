@@ -83,7 +83,7 @@ impl Pass for DeadCodeElimination {
                 }
 
                 // Determine if instruction is essential
-                let mut is_essential = block_essential && match instr {
+                let is_essential = block_essential && match instr {
                     Instr::Print(_) | Instr::BranchIf(_, _, _) | Instr::Jump(_) 
                     | Instr::Call { .. } | Instr::Ret { .. } => true,
                     _ => false,
@@ -112,7 +112,7 @@ impl Pass for DeadCodeElimination {
                     .entry(def_block.clone())
                     .or_default();
                 
-                if block_essentials.insert(def_idx.clone()) {
+                if block_essentials.insert(*def_idx) {
                     // Definition became essential, add its uses to worklist
                     if let Some(def_instr) = cfg.blocks.get(def_block).and_then(|b| b.instrs.get(*def_idx)) {
                         for used_var in Self::get_instr_uses(def_instr) {
@@ -150,7 +150,7 @@ impl Pass for DeadCodeElimination {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::{Op, CmpOp};
+    use crate::optimizer::Op;
     use crate::optimizer::passes::test_helpers::*;
 
     #[test]

@@ -88,8 +88,7 @@ impl Pass for GlobalValueNumbering {
             );
 
             // Check if block's analysis changed
-            let state_changed = block_exit_states.get(&label)
-                .map_or(true, |old_state| &exit_state != old_state);
+            let state_changed = block_exit_states.get(&label) != Some(&exit_state);
             
             if state_changed {
                 // Update states

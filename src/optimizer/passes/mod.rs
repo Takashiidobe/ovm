@@ -130,7 +130,7 @@ impl Optimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::{CmpOp, Instr, Op};
+    use crate::optimizer::{CmpOp, Op};
     use test_helpers::*;
 
     #[test]

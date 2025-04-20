@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::optimizer::{CmpOp, Instr, Op, CFG, BasicBlock}; // Added CFG, BasicBlock
+use crate::optimizer::{CmpOp, Instr, Op, CFG}; // Added CFG, BasicBlock
 
 use super::pass::Pass;
 
@@ -133,7 +133,7 @@ impl Pass for ConstantFolding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::{Instr, Op, CFG, BasicBlock};
+    use crate::optimizer::Op;
     use crate::optimizer::passes::test_helpers::*; // Import helpers
 
     #[test]

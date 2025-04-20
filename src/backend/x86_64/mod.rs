@@ -84,7 +84,7 @@ impl Backend for Codegen {
                 if is_terminator {
                     match instr {
                         Instr::Jump(target_label) => {
-                            self.emit_phi_moves(block_label, &target_label, cfg, &resolve);
+                            self.emit_phi_moves(block_label, target_label, cfg, &resolve);
                         }
                         Instr::BranchIf(_, then_label, else_label) => {
                             // Moves for the 'then' edge (taken if condition is true/jne)
@@ -98,9 +98,9 @@ impl Backend for Codegen {
                             // A better approach involves dedicated edge blocks or careful layout.
 
                             // Emit moves for the 'else' edge (fallthrough/jmp path)
-                            self.emit_phi_moves(block_label, &else_label, cfg, &resolve);
+                            self.emit_phi_moves(block_label, else_label, cfg, &resolve);
                             // Emit moves for the 'then' edge
-                            self.emit_phi_moves(block_label, &then_label, cfg, &resolve);
+                            self.emit_phi_moves(block_label, then_label, cfg, &resolve);
 
                         }
                         Instr::Ret { .. } => {
@@ -119,13 +119,13 @@ impl Backend for Codegen {
                 // --- Generate Assembly for the Current Instruction ---
                 match instr {
                     Instr::Const(name, val) => {
-                        let dst = resolve(&name);
+                        let dst = resolve(name);
                         self.add(format!("movq ${}, {}", val, dst));
                     }
                     Instr::BinOp(dest, left, op, right) => {
-                        let l = resolve(&left);
-                        let r = resolve(&right);
-                        let d = resolve(&dest);
+                        let l = resolve(left);
+                        let r = resolve(right);
+                        let d = resolve(dest);
 
                         match op {
                             Op::Div | Op::Mod => {
@@ -209,16 +209,16 @@ impl Backend for Codegen {
                         }
                     }
                     Instr::Print(name) => {
-                        let src = resolve(&name);
+                        let src = resolve(name);
                         self.add(format!("movq {}, %rsi", src)); // Value to print in %rsi
                         self.add("leaq fmt(%rip), %rdi"); // Format string address in %rdi
                         self.add("xor %rax, %rax"); // No vector args
                         self.add("call printf");
                     }
                     Instr::Cmp(dest, left, cmp_op, right) => {
-                        let dest_loc = resolve(&dest);
-                        let l = resolve(&left);
-                        let r = resolve(&right);
+                        let dest_loc = resolve(dest);
+                        let l = resolve(left);
+                        let r = resolve(right);
                         self.add(format!("cmpq {}, {}", r, l)); // Compare r with l, sets flags based on l - r
                         let set_instr = match cmp_op {
                             CmpOp::Eq => "sete",   // Set if Equal (ZF=1)
@@ -237,7 +237,7 @@ impl Backend for Codegen {
                     }
                     Instr::BranchIf(cond, then_label, else_label) => {
                         // Phi moves should have been emitted before this instruction
-                        let cond_loc = resolve(&cond);
+                        let cond_loc = resolve(cond);
                         self.add(format!("cmpq $0, {}", cond_loc)); // Test if condition is non-zero
                         self.add(format!("jne {}", then_label)); // Jump to then_label if non-zero (true)
                         // If zero (false), execution falls through to the jump to else_label
@@ -281,7 +281,7 @@ impl Backend for Codegen {
 
                         // Move result from %rax (if any)
                         if let Some(res_ssa) = result {
-                            let res_loc = resolve(&res_ssa);
+                            let res_loc = resolve(res_ssa);
                             // Avoid clobbering %rax if res_loc is %rax
                             if res_loc != "%rax" {
                                 self.move_memory("%rax", &res_loc);
@@ -290,7 +290,7 @@ impl Backend for Codegen {
                     }
                     Instr::Ret { value } => {
                         if let Some(val_ssa) = value {
-                            let val_loc = resolve(&val_ssa);
+                            let val_loc = resolve(val_ssa);
                             // Move return value to %rax if it's not already there
                             if val_loc != "%rax" {
                                 self.move_memory(&val_loc, "%rax");
@@ -305,8 +305,8 @@ impl Backend for Codegen {
                     Instr::Assign(dest, src) => {
                         // This might be redundant if register allocation handles coalescing.
                         // If present, it's a simple move.
-                        let dest_loc = resolve(&dest);
-                        let src_loc = resolve(&src);
+                        let dest_loc = resolve(dest);
+                        let src_loc = resolve(src);
                         self.move_memory(&src_loc, &dest_loc);
                     }
                     Instr::FuncParam { .. } => {
@@ -358,7 +358,7 @@ impl Codegen {
                         .iter()
                         .find(|(pred_label, _)| pred_label == current_block_label)
                     {
-                        let dest_loc = resolve(&phi_dest_ssa);
+                        let dest_loc = resolve(phi_dest_ssa);
                         let src_loc = resolve(pred_val_ssa);
 
                         // Check if source and destination are the same (common after reg alloc)

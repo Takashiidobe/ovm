@@ -144,7 +144,7 @@ impl Pass for ConstantPropagation {
 mod tests {
     use super::*;
     use crate::optimizer::passes::test_helpers::*; // Import helpers
-    use crate::optimizer::{Op, CmpOp}; // Keep Op, CmpOp
+    use crate::optimizer::Op; // Keep Op, CmpOp
 
     #[test]
     fn test_basic_propagation() {

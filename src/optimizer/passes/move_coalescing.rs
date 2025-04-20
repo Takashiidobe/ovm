@@ -46,9 +46,7 @@ impl Pass for MoveCoalescing {
                         {
                             // Coalesce by making the Phi write directly to the final destination
                             let reordered_pred_vals: Vec<_> = pred_vals
-                                .iter()
-                                .cloned()
-                                .filter(|(pred, _)| block.preds.contains(pred))
+                                .iter().filter(|&(pred, _)| block.preds.contains(pred)).cloned()
                                 .collect();
                             optimized_instrs.push(Instr::Phi(dest_reg.clone(), reordered_pred_vals));
                             i += 2;
