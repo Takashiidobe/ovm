@@ -260,123 +260,127 @@ impl SSA {
                     .clone()
                     .expect("Current block must be set before a while loop");
 
+                // Jump from block before loop into the header
                 self.cfg.emit(Instr::Jump(header_label.clone()));
 
                 self.cfg.start_block(&header_label);
-                self.cfg.add_edge(&pre_header_label, &header_label);
+                self.cfg.current_block = Some(pre_header_label.clone());
+                self.cfg.add_edge(&pre_header_label, &header_label); // header_label exists due to next step
+                self.cfg.current_block = None; // Terminate pre-header block
+
+                // --- Create ALL loop blocks early ---
+                self.cfg.start_block(&body_label);
+                self.cfg.start_block(&exit_label);
+                // Restore current block to header for Phi/condition emission
                 self.cfg.current_block = Some(header_label.clone());
 
-                let outer_scope_vars = self
-                    .scopes
-                    .last()
-                    .cloned()
-                    .unwrap_or_default();
-
-                self.enter_scope();
-
+                // --- Phi Node Setup (in header) ---
+                let outer_scope_vars = self.scopes.last().cloned().unwrap_or_default();
+                self.enter_scope(); // Enter scope for loop variables (including Phis)
                 let mut phi_data = HashMap::new();
-
                 let mut phi_instructions = Vec::new();
-
                 for (var_name, outer_ssa_name) in &outer_scope_vars {
                     let phi_ssa_name = self.new_temp();
                     let phi_instr = Instr::Phi(
                         phi_ssa_name.clone(),
-                        vec![(pre_header_label.clone(), outer_ssa_name.clone())],
+                        vec![(pre_header_label.clone(), outer_ssa_name.clone())], // Edge from pre-header
                     );
                     phi_instructions.push(phi_instr);
                     self.assign_variable(var_name, &phi_ssa_name);
                     phi_data.insert(var_name.clone(), (phi_ssa_name, outer_ssa_name.clone()));
                 }
-
                 for phi_instr in phi_instructions {
-                    self.cfg.emit(phi_instr);
+                    self.cfg.emit(phi_instr); // Emit Phis into header
                 }
 
-                let cond_temp = self.expr_to_ir(condition);
-
+                // --- Condition Check (in header) ---
+                let cond_temp = self.expr_to_ir(condition); // Condition uses Phi results
                 self.cfg.emit(Instr::BranchIf(
                     cond_temp,
-                    body_label.clone(),
-                    exit_label.clone(),
+                    body_label.clone(), // If true, go to body
+                    exit_label.clone(), // If false, go to exit
                 ));
-                self.cfg.current_block = None;
-
-                self.cfg.start_block(&body_label);
+                // Add edges *after* BranchIf (target blocks already exist)
                 self.cfg.add_edge(&header_label, &body_label);
-                self.cfg.current_block = Some(body_label.clone());
+                self.cfg.add_edge(&header_label, &exit_label);
+                self.cfg.current_block = None; // Header block terminated
 
+
+                // --- Loop Body ---
+                // Block already created, just set current_block
+                self.cfg.current_block = Some(body_label.clone());
+                // Process body recursively
                 match body.as_ref() {
                     Stmt::Block { statements } => {
                         for stmt in statements {
                             self.stmt_to_ir(stmt);
+                            if self.cfg.current_block.is_none() { break; }
                         }
                     }
-                    _ => {
-                        self.stmt_to_ir(body);
-                    }
+                    _ => { self.stmt_to_ir(body); }
                 }
+                let body_final_block_label_opt = self.cfg.current_block.clone();
 
-                let mut back_edge_values = HashMap::new();
-                let current_body_scope = self.scopes.last().cloned().unwrap_or_default();
 
-                for (var_name, (phi_ssa_name, _)) in &phi_data {
-                    if let Some(end_of_body_ssa_name) = current_body_scope.get(var_name) {
-                        back_edge_values.insert(var_name.clone(), end_of_body_ssa_name.clone());
-                    } else {
-                        eprintln!(
-                            "Warning: Variable '{}' with phi node '{}' not found in scope at end of loop body. Using phi result itself for back-edge.",
-                            var_name, phi_ssa_name
-                        );
-                        back_edge_values.insert(var_name.clone(), phi_ssa_name.clone());
-                    }
-                }
-
-                if self.cfg.current_block.as_ref() == Some(&body_label) {
-                    self.cfg.emit(Instr::Jump(header_label.clone()));
-                    self.cfg.add_edge(&body_label, &header_label);
-                } else {
-                    eprintln!(
-                        "Warning: Loop body block '{}' did not end naturally. Back-edge jump might be missing or incorrect.",
-                        body_label
-                    );
-                    if self.cfg.blocks.contains_key(&body_label) {
-                        self.cfg.add_edge(&body_label, &header_label);
-                    }
+                // --- Back Edge ---
+                if let Some(ref body_final_label) = body_final_block_label_opt {
+                     let needs_jump = match self.cfg.blocks.get(body_final_label).and_then(|b| b.instrs.last()) {
+                         Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => false,
+                         _ => true,
+                     };
+                     if needs_jump {
+                        self.cfg.emit(Instr::Jump(header_label.clone()));
+                        self.cfg.add_edge(body_final_label, &header_label); // header exists
+                     } else if self.cfg.blocks.contains_key(body_final_label) {
+                         self.cfg.add_edge(body_final_label, &header_label); // header exists
+                     }
                 }
                 self.cfg.current_block = None;
 
-                if let Some(header_block) = self.cfg.blocks.get_mut(&header_label) {
-                    for instr in header_block.instrs.iter_mut() {
-                        if let Instr::Phi(phi_ssa_name, edges) = instr {
-                            let maybe_var_name = phi_data.iter().find_map(|(vn, (psn, _))| if psn == phi_ssa_name { Some(vn) } else { None });
-                            if let Some(var_name) = maybe_var_name {
-                                if let Some(back_edge_val) = back_edge_values.get(var_name) {
-                                    edges.push((body_label.clone(), back_edge_val.clone()));
+
+                // --- Phi Patching ---
+                let final_body_scope = self.scopes.last().cloned().unwrap_or_default();
+                let mut back_edge_values = HashMap::new();
+                 for (var_name, (phi_ssa_name, initial_value_ssa)) in &phi_data {
+                    if let Some(end_of_body_ssa_name) = final_body_scope.get(var_name) {
+                        back_edge_values.insert(phi_ssa_name.clone(), end_of_body_ssa_name.clone());
+                    } else {
+                        // Variable not reassigned in loop body, use initial value for back-edge
+                        back_edge_values.insert(phi_ssa_name.clone(), initial_value_ssa.clone());
+                    }
+                }
+                if let Some(ref final_label) = body_final_block_label_opt {
+                    if let Some(header_block) = self.cfg.blocks.get_mut(&header_label) {
+                        for instr in header_block.instrs.iter_mut() {
+                            if let Instr::Phi(phi_ssa_name, edges) = instr {
+                                if let Some(back_edge_val) = back_edge_values.get(phi_ssa_name) {
+                                    edges.push((final_label.clone(), back_edge_val.clone()));
                                 } else {
-                                    eprintln!("Error: Could not find back-edge value for variable '{}' (Phi: {})", var_name, phi_ssa_name);
+                                    eprintln!("Error: Could not find back-edge value for Phi node result '{}'", phi_ssa_name);
                                 }
-                            } else {
-                                eprintln!("Error: Could not find original variable name for Phi node result '{}'", phi_ssa_name);
                             }
                         }
+                    } else {
+                        panic!("Loop header block '{}' not found for Phi patching.", header_label);
                     }
-                } else {
-                    panic!("Loop header block '{}' not found for Phi patching.", header_label);
                 }
 
-                self.cfg.start_block(&exit_label);
-                self.cfg.add_edge(&header_label, &exit_label);
+
+                // --- Loop Exit ---
+                // Block already created, just set current_block
                 self.cfg.current_block = Some(exit_label.clone());
 
-                self.exit_scope();
-                self.enter_scope();
-
-                for (var_name, (phi_ssa_name, _)) in phi_data {
-                    self.assign_variable(&var_name, &phi_ssa_name);
+                // --- Scope Handling ---
+                self.exit_scope(); // Exit loop body scope
+                if let Some(outer_scope) = self.scopes.last_mut() {
+                     for (var_name, (phi_ssa_name, _)) in phi_data {
+                         outer_scope.insert(var_name.clone(), phi_ssa_name.clone());
+                     }
+                } else {
+                    panic!("Cannot update outer scope after loop - scope stack empty.");
                 }
 
-                self.new_temp()
+                self.new_temp() // Return dummy temp for the statement
             }
              Stmt::If {
                 condition,
