@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-
+use crate::optimizer::{CFG, Instr, Op};
 use crate::optimizer::passes::pass::Pass;
-use crate::optimizer::{Instr, Op};
 
 /// Strength Reduction Optimization Pass
 ///
@@ -26,147 +25,110 @@ impl StrengthReduction {
 }
 
 impl Pass for StrengthReduction {
-    fn optimize(&self, instrs: Vec<Instr>) -> Vec<Instr> {
-        let mut optimized_instrs = Vec::with_capacity(instrs.len());
-        // Need to track constant values to perform the reduction
+    fn optimize(&self, mut cfg: CFG) -> CFG {
+        // Track constants across the CFG
         let mut constants: HashMap<String, i64> = HashMap::new();
+        
+        // Process each block
+        for block in cfg.blocks.values_mut() {
+            let mut optimized_instrs = Vec::with_capacity(block.instrs.len());
+            
+            for instr in &block.instrs {
+                match instr {
+                    Instr::Const(name, val) => {
+                        constants.insert(name.clone(), *val);
+                        optimized_instrs.push(instr.clone()); // Keep the const instruction
+                    }
+                    Instr::BinOp(dest, left, op, right) => {
+                        let left_val = constants.get(left);
+                        let right_val = constants.get(right);
+                        let mut replaced = false;
 
-        for instr in instrs {
-            match instr {
-                Instr::Const(ref name, val) => {
-                    constants.insert(name.clone(), val);
-                    optimized_instrs.push(instr.clone()); // Keep the const instruction
-                }
-                Instr::BinOp(ref dest, ref left, op, ref right) => {
-                    let left_val = constants.get(left);
-                    let right_val = constants.get(right);
-                    let mut replaced = false;
+                        match op {
+                            Op::Mul => {
+                                let mut handled_mul = false; // Flag to track if multiplication was handled
 
-                    match op {
-                        Op::Mul => {
-                            let mut handled_mul = false; // Flag to track if multiplication was handled
+                                // --- Optimization: Multiplication by Constant ---
 
-                            // --- Optimization: Multiplication by Constant ---
-
-                            // Helper function to generate the shift-and-add sequence
-                            let generate_shift_add =
-                                |optimized_instrs: &mut Vec<Instr>,
-                                 dest: &String,
-                                 x: &String,
-                                 c: i64| {
-                                    let mut exponents = Vec::new();
-                                    for k in 0..63 {
-                                        // Check bits 0 to 62
-                                        if (c >> k) & 1 == 1 {
-                                            exponents.push(k as u32);
+                                // Helper function to generate the shift-and-add sequence
+                                let generate_shift_add =
+                                    |optimized_instrs: &mut Vec<Instr>,
+                                     dest: &String,
+                                     x: &String,
+                                     c: i64| {
+                                        let mut exponents = Vec::new();
+                                        for k in 0..63 {
+                                            // Check bits 0 to 62
+                                            if (c >> k) & 1 == 1 {
+                                                exponents.push(k as u32);
+                                            }
                                         }
-                                    }
 
-                                    if exponents.is_empty() {
-                                        // Should not happen if c > 0
-                                        return false;
-                                    }
+                                        if exponents.is_empty() {
+                                            // Should not happen if c > 0
+                                            return false;
+                                        }
 
-                                    let mut last_sum_reg = String::new();
-                                    let mut is_first_term = true;
+                                        let mut last_sum_reg = String::new();
+                                        let mut is_first_term = true;
 
-                                    for (i, &k) in exponents.iter().enumerate() {
-                                        // 1. Create shift amount constant
-                                        let shift_amount_reg = format!("{}_shift_{}", dest, k);
-                                        optimized_instrs
-                                            .push(Instr::Const(shift_amount_reg.clone(), k as i64));
+                                        for (i, &k) in exponents.iter().enumerate() {
+                                            // 1. Create shift amount constant
+                                            let shift_amount_reg = format!("{}_shift_{}", dest, k);
+                                            optimized_instrs
+                                                .push(Instr::Const(shift_amount_reg.clone(), k as i64));
 
-                                        // 2. Perform the shift: x << k
-                                        let shl_temp = if is_first_term && exponents.len() == 1 {
-                                            // If only one term, result goes directly to dest
-                                            dest.clone()
-                                        } else {
-                                            format!("{}_shl_{}", dest, k)
-                                        };
-                                        optimized_instrs.push(Instr::BinOp(
-                                            shl_temp.clone(),
-                                            x.clone(),
-                                            Op::Shl,
-                                            shift_amount_reg,
-                                        ));
-
-                                        // 3. Add to the sum
-                                        if is_first_term {
-                                            last_sum_reg = shl_temp;
-                                            is_first_term = false;
-                                        } else {
-                                            let current_sum_reg = if i == exponents.len() - 1 {
-                                                // Last term addition writes to final dest
+                                            // 2. Perform the shift: x << k
+                                            let shl_temp = if is_first_term && exponents.len() == 1 {
+                                                // If only one term, result goes directly to dest
                                                 dest.clone()
                                             } else {
-                                                format!("{}_sum_{}", dest, i)
+                                                format!("{}_shl_{}", dest, k)
                                             };
                                             optimized_instrs.push(Instr::BinOp(
-                                                current_sum_reg.clone(),
-                                                last_sum_reg,
-                                                Op::Add,
-                                                shl_temp,
+                                                shl_temp.clone(),
+                                                x.clone(),
+                                                Op::Shl,
+                                                shift_amount_reg,
                                             ));
-                                            last_sum_reg = current_sum_reg;
+
+                                            // 3. Add to the sum
+                                            if is_first_term {
+                                                last_sum_reg = shl_temp;
+                                                is_first_term = false;
+                                            } else {
+                                                let current_sum_reg = if i == exponents.len() - 1 {
+                                                    // Last term addition writes to final dest
+                                                    dest.clone()
+                                                } else {
+                                                    format!("{}_sum_{}", dest, i)
+                                                };
+                                                optimized_instrs.push(Instr::BinOp(
+                                                    current_sum_reg.clone(),
+                                                    last_sum_reg,
+                                                    Op::Add,
+                                                    shl_temp,
+                                                ));
+                                                last_sum_reg = current_sum_reg;
+                                            }
                                         }
-                                    }
-                                    true // Indicate success
-                                };
+                                        true // Indicate success
+                                    };
 
-                            // Check right operand first
-                            if let Some(&rv) = right_val {
-                                if rv == 0 {
-                                    // Optimization: x * 0 => 0
-                                    optimized_instrs.push(Instr::Const(dest.clone(), 0));
-                                    handled_mul = true;
-                                } else if rv == 1 {
-                                    // Optimization: x * 1 => x
-                                    optimized_instrs
-                                        .push(Instr::Assign(dest.clone(), left.clone()));
-                                    handled_mul = true;
-                                } else if rv > 1 {
-                                    if let Some(exponent) = Self::get_power_of_two_exponent(rv) {
-                                        // Optimization: x * 2^k => x << k
-                                        let shift_amount_reg = format!("{}_shift_amt", dest);
-                                        optimized_instrs.push(Instr::Const(
-                                            shift_amount_reg.clone(),
-                                            exponent as i64,
-                                        ));
-                                        optimized_instrs.push(Instr::BinOp(
-                                            dest.clone(),
-                                            left.clone(),
-                                            Op::Shl,
-                                            shift_amount_reg,
-                                        ));
-                                        handled_mul = true;
-                                    } else {
-                                        // Optimization: x * c => shift and add
-                                        handled_mul = generate_shift_add(
-                                            &mut optimized_instrs,
-                                            dest,
-                                            left,
-                                            rv,
-                                        );
-                                    }
-                                }
-                            }
-
-                            // If not handled, check left operand (commutative)
-                            if !handled_mul {
-                                if let Some(&lv) = left_val {
-                                    if lv == 0 {
-                                        // Optimization: 0 * x => 0
+                                // Check right operand first
+                                if let Some(&rv) = right_val {
+                                    if rv == 0 {
+                                        // Optimization: x * 0 => 0
                                         optimized_instrs.push(Instr::Const(dest.clone(), 0));
                                         handled_mul = true;
-                                    } else if lv == 1 {
-                                        // Optimization: 1 * x => x
+                                    } else if rv == 1 {
+                                        // Optimization: x * 1 => x
                                         optimized_instrs
-                                            .push(Instr::Assign(dest.clone(), right.clone()));
+                                            .push(Instr::Assign(dest.clone(), left.clone()));
                                         handled_mul = true;
-                                    } else if lv > 1 {
-                                        if let Some(exponent) = Self::get_power_of_two_exponent(lv)
-                                        {
-                                            // Optimization: 2^k * x => x << k
+                                    } else if rv > 1 {
+                                        if let Some(exponent) = Self::get_power_of_two_exponent(rv) {
+                                            // Optimization: x * 2^k => x << k
                                             let shift_amount_reg = format!("{}_shift_amt", dest);
                                             optimized_instrs.push(Instr::Const(
                                                 shift_amount_reg.clone(),
@@ -174,101 +136,144 @@ impl Pass for StrengthReduction {
                                             ));
                                             optimized_instrs.push(Instr::BinOp(
                                                 dest.clone(),
-                                                right.clone(), // Shift the variable part
+                                                left.clone(),
                                                 Op::Shl,
                                                 shift_amount_reg,
                                             ));
                                             handled_mul = true;
                                         } else {
-                                            // Optimization: c * x => shift and add
+                                            // Optimization: x * c => shift and add
                                             handled_mul = generate_shift_add(
                                                 &mut optimized_instrs,
                                                 dest,
-                                                right,
-                                                lv,
+                                                left,
+                                                rv,
                                             );
                                         }
                                     }
                                 }
-                            }
 
-                            // Update the replaced flag based on whether we handled the multiplication
-                            replaced = handled_mul;
-                        }
-                        Op::Div => {
-                            // Only handle division where the divisor is the power of two constant
-                            if let Some(exponent) =
-                                right_val.and_then(|&rv| Self::get_power_of_two_exponent(rv))
-                            {
-                                // x / (2^exponent) => x >> exponent_const
-                                let shift_amount_reg = format!("{}_shift_amt", dest);
-                                optimized_instrs
-                                    .push(Instr::Const(shift_amount_reg.clone(), exponent as i64));
-                                optimized_instrs.push(Instr::BinOp(
-                                    dest.clone(),
-                                    left.clone(),
-                                    Op::Shr,
-                                    shift_amount_reg,
-                                ));
-                                replaced = true;
-                            }
-                        }
-                        Op::Mod => {
-                            // Handle modulo where the divisor is the power of two constant
-                            if let Some(exponent) =
-                                right_val.and_then(|&rv| Self::get_power_of_two_exponent(rv))
-                            {
-                                // x % (2^exponent) => x & ((2^exponent) - 1)
-                                let mask_val = (1i64 << exponent) - 1;
-                                let mask_reg = format!("{}_mask", dest);
-                                optimized_instrs.push(Instr::Const(mask_reg.clone(), mask_val));
-                                optimized_instrs.push(Instr::BinOp(
-                                    dest.clone(),
-                                    left.clone(),
-                                    Op::BitAnd, // Use bitwise AND
-                                    mask_reg,
-                                ));
-                                replaced = true;
-                            }
-                        }
-                        _ => {}
-                    }
+                                // If not handled, check left operand (commutative)
+                                if !handled_mul {
+                                    if let Some(&lv) = left_val {
+                                        if lv == 0 {
+                                            // Optimization: 0 * x => 0
+                                            optimized_instrs.push(Instr::Const(dest.clone(), 0));
+                                            handled_mul = true;
+                                        } else if lv == 1 {
+                                            // Optimization: 1 * x => x
+                                            optimized_instrs
+                                                .push(Instr::Assign(dest.clone(), right.clone()));
+                                            handled_mul = true;
+                                        } else if lv > 1 {
+                                            if let Some(exponent) = Self::get_power_of_two_exponent(lv)
+                                            {
+                                                // Optimization: 2^k * x => x << k
+                                                let shift_amount_reg = format!("{}_shift_amt", dest);
+                                                optimized_instrs.push(Instr::Const(
+                                                    shift_amount_reg.clone(),
+                                                    exponent as i64,
+                                                ));
+                                                optimized_instrs.push(Instr::BinOp(
+                                                    dest.clone(),
+                                                    right.clone(), // Shift the variable part
+                                                    Op::Shl,
+                                                    shift_amount_reg,
+                                                ));
+                                                handled_mul = true;
+                                            } else {
+                                                // Optimization: c * x => shift and add
+                                                handled_mul = generate_shift_add(
+                                                    &mut optimized_instrs,
+                                                    dest,
+                                                    right,
+                                                    lv,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
 
-                    if !replaced {
-                        // If not replaced, keep the original instruction
-                        // Also, invalidate the destination register in constants map if it was there
+                                // Update the replaced flag based on whether we handled the multiplication
+                                replaced = handled_mul;
+                            }
+                            Op::Div => {
+                                // Only handle division where the divisor is the power of two constant
+                                if let Some(exponent) =
+                                    right_val.and_then(|&rv| Self::get_power_of_two_exponent(rv))
+                                {
+                                    // x / (2^exponent) => x >> exponent_const
+                                    let shift_amount_reg = format!("{}_shift_amt", dest);
+                                    optimized_instrs
+                                        .push(Instr::Const(shift_amount_reg.clone(), exponent as i64));
+                                    optimized_instrs.push(Instr::BinOp(
+                                        dest.clone(),
+                                        left.clone(),
+                                        Op::Shr,
+                                        shift_amount_reg,
+                                    ));
+                                    replaced = true;
+                                }
+                            }
+                            Op::Mod => {
+                                // Handle modulo where the divisor is the power of two constant
+                                if let Some(exponent) =
+                                    right_val.and_then(|&rv| Self::get_power_of_two_exponent(rv))
+                                {
+                                    // x % (2^exponent) => x & ((2^exponent) - 1)
+                                    let mask_val = (1i64 << exponent) - 1;
+                                    let mask_reg = format!("{}_mask", dest);
+                                    optimized_instrs.push(Instr::Const(mask_reg.clone(), mask_val));
+                                    optimized_instrs.push(Instr::BinOp(
+                                        dest.clone(),
+                                        left.clone(),
+                                        Op::BitAnd, // Use bitwise AND
+                                        mask_reg,
+                                    ));
+                                    replaced = true;
+                                }
+                            }
+                            _ => {}
+                        }
+
+                        if !replaced {
+                            // If not replaced, keep the original instruction
+                            // Also, invalidate the destination register in constants map if it was there
+                            constants.remove(dest);
+                            optimized_instrs.push(instr.clone());
+                        }
+                        // If replaced, the new BinOp might produce a non-constant result,
+                        // so we should also invalidate the destination register.
                         constants.remove(dest);
+                    }
+                    Instr::Assign(dest, src) => {
+                        // Propagate constants through assignments
+                        if let Some(&val) = constants.get(src) {
+                            constants.insert(dest.clone(), val);
+                        } else {
+                            constants.remove(dest);
+                        }
                         optimized_instrs.push(instr.clone());
                     }
-                    // If replaced, the new BinOp might produce a non-constant result,
-                    // so we should also invalidate the destination register.
-                    constants.remove(dest);
-                }
-                Instr::Assign(ref dest, ref src) => {
-                    // Propagate constants through assignments
-                    if let Some(&val) = constants.get(src) {
-                        constants.insert(dest.clone(), val);
-                    } else {
-                        constants.remove(dest);
+                    Instr::FuncParam { name, .. } => {
+                        constants.remove(name);
+                        optimized_instrs.push(Instr::FuncParam { name: name.clone(), index: 0 }); // Keep instruction
                     }
-                    optimized_instrs.push(instr.clone());
-                }
-                Instr::FuncParam { name, .. } => {
-                    constants.remove(&name);
-                    optimized_instrs.push(Instr::FuncParam { name, index: 0 }); // Keep instruction
-                }
-                _ => {
-                    // For other instructions, invalidate potential definitions
-                    // A more robust approach would track defs per instruction type
-                    if let Some(def_reg) = get_defined_register(&instr) {
-                        constants.remove(&def_reg);
+                    _ => {
+                        // For other instructions, invalidate potential definitions
+                        // A more robust approach would track defs per instruction type
+                        if let Some(def_reg) = get_defined_register(instr) {
+                            constants.remove(&def_reg);
+                        }
+                        optimized_instrs.push(instr.clone());
                     }
-                    optimized_instrs.push(instr.clone());
                 }
             }
+            
+            block.instrs = optimized_instrs;
         }
-
-        optimized_instrs
+        
+        cfg
     }
 
     fn name(&self) -> &'static str {
@@ -294,149 +299,169 @@ fn get_defined_register(instr: &Instr) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::Instr;
+    use crate::optimizer::passes::test_helpers::*;
 
     #[test]
     fn test_multiply_by_power_of_two() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 5), // x = 5
-            Instr::Const("t1".to_string(), 8), // y = 8 (which is 2^3)
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Mul,
-                "t1".to_string(),
-            ), // t2 = t0 * t1
-            Instr::Print("t2".to_string()),
-        ];
         let pass = StrengthReduction;
-        let optimized = pass.optimize(instrs);
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 5),
+                cnst("t1", 8),
+                binop("t2", "t0", Op::Mul, "t1"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 5),
-            Instr::Const("t1".to_string(), 8),
-            Instr::Const("t2_shift_amt".to_string(), 3), // exponent = 3
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Shl,
-                "t2_shift_amt".to_string(),
-            ), // t2 = t0 << 3
-            Instr::Print("t2".to_string()),
-        ];
-        assert_eq!(optimized, expected);
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 5),
+                cnst("t1", 8),
+                cnst("t2_shift_amt", 3),
+                binop("t2", "t0", Op::Shl, "t2_shift_amt"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
+
+        assert_eq!(pass.optimize(cfg), expected);
     }
 
     #[test]
     fn test_divide_by_power_of_two() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 40), // x = 40
-            Instr::Const("t1".to_string(), 4),  // y = 4 (which is 2^2)
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Div,
-                "t1".to_string(),
-            ), // t2 = t0 / t1
-            Instr::Print("t2".to_string()),
-        ];
         let pass = StrengthReduction;
-        let optimized = pass.optimize(instrs);
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 40),
+                cnst("t1", 4),
+                binop("t2", "t0", Op::Div, "t1"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 40),
-            Instr::Const("t1".to_string(), 4),
-            Instr::Const("t2_shift_amt".to_string(), 2), // exponent = 2
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Shr,
-                "t2_shift_amt".to_string(),
-            ), // t2 = t0 >> 2
-            Instr::Print("t2".to_string()),
-        ];
-        assert_eq!(optimized, expected);
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 40),
+                cnst("t1", 4),
+                cnst("t2_shift_amt", 2),
+                binop("t2", "t0", Op::Shr, "t2_shift_amt"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
+
+        assert_eq!(pass.optimize(cfg), expected);
+    }
+
+    #[test]
+    fn test_strength_reduction_across_blocks() {
+        let pass = StrengthReduction;
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("c", 8),  // Power of 2 constant
+                branch("cond", "then", "else"),
+            ], vec![], vec!["then", "else"]),
+            ("then", vec![
+                cnst("x", 5),
+                binop("y", "x", Op::Mul, "c"),  // Should be reduced to shift
+                jump("merge"),
+            ], vec!["entry"], vec!["merge"]),
+            ("else", vec![
+                cnst("x", 10),
+                binop("y", "x", Op::Mul, "c"),  // Should be reduced to shift
+                jump("merge"),
+            ], vec!["entry"], vec!["merge"]),
+            ("merge", vec![
+                phi("result", vec![("then", "y"), ("else", "y")]),
+                print("result"),
+            ], vec!["then", "else"], vec![]),
+        ]);
+
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("c", 8),
+                branch("cond", "then", "else"),
+            ], vec![], vec!["then", "else"]),
+            ("then", vec![
+                cnst("x", 5),
+                cnst("y_shift_amt", 3),
+                binop("y", "x", Op::Shl, "y_shift_amt"),
+                jump("merge"),
+            ], vec!["entry"], vec!["merge"]),
+            ("else", vec![
+                cnst("x", 10),
+                cnst("y_shift_amt", 3),
+                binop("y", "x", Op::Shl, "y_shift_amt"),
+                jump("merge"),
+            ], vec!["entry"], vec!["merge"]),
+            ("merge", vec![
+                phi("result", vec![("then", "y"), ("else", "y")]),
+                print("result"),
+            ], vec!["then", "else"], vec![]),
+        ]);
+
+        assert_eq!(pass.optimize(cfg), expected);
     }
 
     #[test]
     fn test_divide_by_non_power_of_two() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 40),
-            Instr::Const("t1".to_string(), 5), // Not power of 2
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Div,
-                "t1".to_string(),
-            ),
-            Instr::Print("t2".to_string()),
-        ];
         let pass = StrengthReduction;
-        let original_instrs = instrs.clone();
-        let optimized = pass.optimize(instrs);
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 40),
+                cnst("t1", 5), // Not power of 2
+                binop("t2", "t0", Op::Div, "t1"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
+
+        let original_cfg = cfg.clone();
+        let optimized = pass.optimize(cfg);
 
         // Should not be changed
-        assert_eq!(optimized, original_instrs);
+        assert_eq!(optimized, original_cfg);
     }
 
     #[test]
     fn test_divide_non_constant_divisor() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 40),
-            Instr::Assign("t1".to_string(), "some_var".to_string()), // t1 is not constant
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Div,
-                "t1".to_string(),
-            ),
-            Instr::Print("t2".to_string()),
-        ];
         let pass = StrengthReduction;
-        let original_instrs = instrs.clone();
-        let optimized = pass.optimize(instrs);
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 40),
+                assign("t1", "some_var"), // t1 is not constant
+                binop("t2", "t0", Op::Div, "t1"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
+
+        let original_cfg = cfg.clone();
+        let optimized = pass.optimize(cfg);
 
         // Should not be changed
-        assert_eq!(optimized, original_instrs);
+        assert_eq!(optimized, original_cfg);
     }
 
     #[test]
     fn test_multiply_non_constant() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Assign("t0".to_string(), "some_var".to_string()), // t0 is not constant
-            Instr::Const("t1".to_string(), 8),
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Mul,
-                "t1".to_string(),
-            ),
-            Instr::Print("t2".to_string()),
-        ];
         let pass = StrengthReduction;
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                assign("t0", "some_var"), // t0 is not constant
+                cnst("t1", 8),
+                binop("t2", "t0", Op::Mul, "t1"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
         // Expect the multiply with const 8 on the right to be converted
-        let optimized = pass.optimize(instrs);
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Assign("t0".to_string(), "some_var".to_string()),
-            Instr::Const("t1".to_string(), 8),
-            Instr::Const("t2_shift_amt".to_string(), 3),
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Shl,
-                "t2_shift_amt".to_string(),
-            ),
-            Instr::Print("t2".to_string()),
-        ];
+        let optimized = pass.optimize(cfg);
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                assign("t0", "some_var"),
+                cnst("t1", 8),
+                cnst("t2_shift_amt", 3),
+                binop("t2", "t0", Op::Shl, "t2_shift_amt"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
         assert_eq!(optimized, expected);
     }
 
@@ -444,92 +469,65 @@ mod tests {
     fn test_constant_propagation_needed() {
         // This test demonstrates that the pass handles simple constant propagation
         // through Assign instructions due to its internal `constants` map.
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("c8".to_string(), 8),
-            Instr::Assign("t1".to_string(), "c8".to_string()), // t1 = 8, propagated internally
-            Instr::Const("t0".to_string(), 5),
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Mul,
-                "t1".to_string(),
-            ), // t2 = t0 * t1 (should be reduced)
-            Instr::Print("t2".to_string()),
-        ];
         let pass = StrengthReduction;
-        let optimized = pass.optimize(instrs);
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("c8", 8),
+                assign("t1", "c8"), // t1 = 8, propagated internally
+                cnst("t0", 5),
+                binop("t2", "t0", Op::Mul, "t1"), // t2 = t0 * t1 (should be reduced)
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
         // Because the pass tracks constants and propagates them through Assign,
         // it correctly identifies t1 as 8 and performs strength reduction.
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("c8".to_string(), 8),
-            Instr::Assign("t1".to_string(), "c8".to_string()),
-            Instr::Const("t0".to_string(), 5),
-            Instr::Const("t2_shift_amt".to_string(), 3),
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Shl,
-                "t2_shift_amt".to_string(),
-            ),
-            Instr::Print("t2".to_string()),
-        ];
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("c8", 8),
+                assign("t1", "c8"),
+                cnst("t0", 5),
+                cnst("t2_shift_amt", 3),
+                binop("t2", "t0", Op::Shl, "t2_shift_amt"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
         assert_eq!(
-            optimized, expected,
+            pass.optimize(cfg), expected,
             "Optimization should happen due to internal constant propagation through Assign"
         );
     }
+
     #[test]
     fn test_multiply_by_constant_shift_add() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 5),  // x = 5
-            Instr::Const("t1".to_string(), 10), // c = 10 (binary 1010)
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Mul,
-                "t1".to_string(),
-            ), // t2 = t0 * t1
-            Instr::Print("t2".to_string()),
-        ];
         let pass = StrengthReduction;
-        let optimized = pass.optimize(instrs);
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 5),  // x = 5
+                cnst("t1", 10), // c = 10 (binary 1010)
+                binop("t2", "t0", Op::Mul, "t1"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
         // Expected: t2 = (t0 << 1) + (t0 << 3)
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 5),
-            Instr::Const("t1".to_string(), 10),
-            // Shift for bit 1 (k=1)
-            Instr::Const("t2_shift_1".to_string(), 1),
-            Instr::BinOp(
-                "t2_shl_1".to_string(), // Intermediate result for x << 1
-                "t0".to_string(),
-                Op::Shl,
-                "t2_shift_1".to_string(),
-            ),
-            // Shift for bit 3 (k=3)
-            Instr::Const("t2_shift_3".to_string(), 3),
-            Instr::BinOp(
-                "t2_shl_3".to_string(), // Intermediate result for x << 3
-                "t0".to_string(),
-                Op::Shl,
-                "t2_shift_3".to_string(),
-            ),
-            // Add the results: (x << 1) + (x << 3)
-            Instr::BinOp(
-                "t2".to_string(), // Final result
-                "t2_shl_1".to_string(),
-                Op::Add,
-                "t2_shl_3".to_string(),
-            ),
-            Instr::Print("t2".to_string()),
-        ];
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 5),
+                cnst("t1", 10),
+                // Shift for bit 1 (k=1)
+                cnst("t2_shift_1", 1),
+                binop("t2_shl_1", "t0", Op::Shl, "t2_shift_1"),
+                // Shift for bit 3 (k=3)
+                cnst("t2_shift_3", 3),
+                binop("t2_shl_3", "t0", Op::Shl, "t2_shift_3"),
+                // Add the results: (x << 1) + (x << 3)
+                binop("t2", "t2_shl_1", Op::Add, "t2_shl_3"),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
-        assert_eq!(optimized, expected);
+        assert_eq!(pass.optimize(cfg), expected);
     }
 }

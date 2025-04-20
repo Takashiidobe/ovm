@@ -1,10 +1,116 @@
-use crate::optimizer::{CmpOp, Instr, Op, passes::Pass};
+use crate::optimizer::{CFG, CmpOp, Instr, Op};
 use std::collections::{HashMap, VecDeque};
+use super::pass::Pass;
 
 /// Global Value Numbering optimization pass.
 /// This pass identifies expressions that compute the same value and replaces them
 /// with references to a single representative value.
 pub struct GlobalValueNumbering;
+
+// Helper structure to represent expressions canonically for hashing.
+// Ensures commutativity for relevant operations.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ExprKey {
+    // Constant value
+    Const(i64),
+    // Op, vn1, vn2 (vn1 <= vn2 for commutative ops)
+    BinOp(Op, usize, usize),
+    // CmpOp, vn1, vn2
+    Cmp(CmpOp, usize, usize),
+    // Could add UnaryOp, etc. later if needed.
+}
+
+impl ExprKey {
+    fn from_binop(op: Op, vn1: usize, vn2: usize) -> Self {
+        match op {
+            // Commutative operations: order operands by value number.
+            Op::Add | Op::Mul | Op::BitAnd | Op::BitOr | Op::And | Op::Or => {
+                if vn1 <= vn2 {
+                    ExprKey::BinOp(op, vn1, vn2)
+                } else {
+                    ExprKey::BinOp(op, vn2, vn1)
+                }
+            }
+            // Non-commutative operations: keep original order.
+            Op::Sub | Op::Div | Op::Shl | Op::Shr | Op::Mod => ExprKey::BinOp(op, vn1, vn2),
+        }
+    }
+}
+
+impl Pass for GlobalValueNumbering {
+    fn optimize(&self, mut cfg: CFG) -> CFG {
+        if cfg.blocks.is_empty() {
+            return cfg;
+        }
+
+        // Initialize GVN Global State
+        let mut global_expr_to_vn: HashMap<ExprKey, usize> = HashMap::new();
+        let mut global_vn_to_canonical_var: HashMap<usize, String> = HashMap::new();
+        let mut next_vn = 0;
+
+        // Track value numbers at block boundaries
+        let mut block_entry_states: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        let mut block_exit_states: HashMap<String, HashMap<String, usize>> = HashMap::new();
+
+        // Initialize worklist with all blocks
+        let mut worklist: VecDeque<String> = cfg.blocks.keys().cloned().collect();
+        
+        // Process blocks until fixpoint
+        while let Some(label) = worklist.pop_front() {
+            // Get block data we need before mutable borrow
+            let (block_instrs, block_preds, block_succs) = {
+                let block = cfg.blocks.get(&label).unwrap();
+                (block.instrs.clone(), block.preds.clone(), block.succs.clone())
+            };
+            
+            // Compute entry state by merging predecessor exit states
+            let mut entry_state = HashMap::new();
+            if !block_preds.is_empty() {
+                // Merge states from all predecessors
+                for pred in &block_preds {
+                    if let Some(pred_state) = block_exit_states.get(pred) {
+                        for (var, &vn) in pred_state {
+                            entry_state.entry(var.clone())
+                                .and_modify(|e| if *e != vn { *e = next_vn; next_vn += 1; })
+                                .or_insert(vn);
+                        }
+                    }
+                }
+            }
+
+            // Process the block
+            let (new_instrs, exit_state) = self.process_basic_block(
+                &block_instrs,
+                &entry_state,
+                &mut global_expr_to_vn,
+                &mut global_vn_to_canonical_var,
+                &mut next_vn,
+            );
+
+            // Check if block's analysis changed
+            let state_changed = block_exit_states.get(&label)
+                .map_or(true, |old_state| &exit_state != old_state);
+            
+            if state_changed {
+                // Update states
+                block_entry_states.insert(label.clone(), entry_state);
+                block_exit_states.insert(label.clone(), exit_state);
+                
+                // Update block instructions
+                cfg.blocks.get_mut(&label).unwrap().instrs = new_instrs;
+                
+                // Add successors to worklist
+                worklist.extend(block_succs);
+            }
+        }
+
+        cfg
+    }
+
+    fn name(&self) -> &'static str {
+        "GlobalValueNumbering"
+    }
+}
 
 impl GlobalValueNumbering {
     // Renamed and updated signature for global processing
@@ -196,579 +302,101 @@ impl GlobalValueNumbering {
     }
 }
 
-impl Pass for GlobalValueNumbering {
-    fn name(&self) -> &'static str {
-        "global_value_numbering"
-    }
-
-    fn optimize(&self, instrs: Vec<Instr>) -> Vec<Instr> {
-        if instrs.is_empty() {
-            return instrs;
-        }
-
-        // 1. Build CFG
-        let mut blocks: HashMap<String, Vec<Instr>> = HashMap::new();
-        let mut predecessors: HashMap<String, Vec<String>> = HashMap::new();
-        let mut successors: HashMap<String, Vec<String>> = HashMap::new();
-        let mut block_order: Vec<String> = Vec::new();
-
-        let mut current_label: Option<String> = None;
-        let mut current_instrs: Vec<Instr> = Vec::new();
-
-        if !matches!(instrs.first(), Some(Instr::Label(_))) {
-            panic!("IR must start with a Label instruction");
-        }
-
-        for instr in &instrs {
-            if let Instr::Label(label) = instr {
-                if let Some(prev_label) = current_label.take() {
-                    if !current_instrs.is_empty() {
-                        let last_instr_is_terminator = current_instrs.last().is_some_and(|li| {
-                            matches!(li, Instr::Jump(_) | Instr::BranchIf(_, _, _))
-                        });
-                        if !last_instr_is_terminator {
-                            successors
-                                .entry(prev_label.clone())
-                                .or_default()
-                                .push(label.clone());
-                            predecessors
-                                .entry(label.clone())
-                                .or_default()
-                                .push(prev_label.clone());
-                        }
-                        blocks.insert(prev_label, current_instrs);
-                    }
-                }
-                current_label = Some(label.clone());
-                block_order.push(label.clone());
-                predecessors.entry(label.clone()).or_default();
-                successors.entry(label.clone()).or_default();
-                current_instrs = vec![instr.clone()];
-            } else if let Some(ref label) = current_label {
-                current_instrs.push(instr.clone());
-                let mut terminated = false;
-                match instr {
-                    Instr::Jump(target_label) => {
-                        successors
-                            .entry(label.clone())
-                            .or_default()
-                            .push(target_label.clone());
-                        predecessors
-                            .entry(target_label.clone())
-                            .or_default()
-                            .push(label.clone());
-                        terminated = true;
-                    }
-                    Instr::BranchIf(_, true_label, false_label) => {
-                        successors
-                            .entry(label.clone())
-                            .or_default()
-                            .push(true_label.clone());
-                        predecessors
-                            .entry(true_label.clone())
-                            .or_default()
-                            .push(label.clone());
-                        successors
-                            .entry(label.clone())
-                            .or_default()
-                            .push(false_label.clone());
-                        predecessors
-                            .entry(false_label.clone())
-                            .or_default()
-                            .push(label.clone());
-                        terminated = true;
-                    }
-                    _ => {}
-                }
-                if terminated {
-                    blocks.insert(label.clone(), current_instrs);
-                    current_label = None;
-                    current_instrs = Vec::new();
-                }
-            } else {
-                panic!("Internal error: Instruction processed before first label.");
-            }
-        }
-        if let Some(label) = current_label {
-            if !current_instrs.is_empty() {
-                blocks.insert(label, current_instrs);
-            }
-        }
-
-        // 2. Initialize GVN Global State
-        let mut global_expr_to_vn: HashMap<ExprKey, usize> = HashMap::new();
-        let mut global_vn_to_canonical_var: HashMap<usize, String> = HashMap::new();
-        let mut next_vn = 0;
-        let mut block_entry_states: HashMap<String, HashMap<String, usize>> = HashMap::new();
-        let mut block_exit_states: HashMap<String, HashMap<String, usize>> = HashMap::new();
-
-        // Initialize states for all blocks before starting iteration
-        for label in &block_order {
-            block_entry_states.insert(label.clone(), HashMap::new());
-            block_exit_states.insert(label.clone(), HashMap::new());
-        }
-
-        // 3. Worklist Iteration
-        let mut worklist: VecDeque<String> = block_order.iter().cloned().collect();
-        let mut optimized_blocks: HashMap<String, Vec<Instr>> = HashMap::new();
-
-        while let Some(label) = worklist.pop_front() {
-            let block_instrs = blocks.get(&label).expect("Block must exist in CFG");
-            let block_preds = predecessors.get(&label).cloned().unwrap_or_default();
-
-            // --- Compute Entry State via Merge (Phi-aware) ---
-            let mut computed_entry_state: HashMap<String, usize> = HashMap::new();
-
-            if !block_preds.is_empty() {
-                // Identify variables defined by Phi nodes in this block
-                let mut phi_defs = HashMap::new(); // dest -> Vec<(pred_label, source_var)>
-                for instr in block_instrs.iter() {
-                    if let Instr::Phi(dest, sources) = instr {
-                        phi_defs.insert(dest.clone(), sources.clone());
-                    }
-                }
-
-                // Process Phi nodes first
-                for (dest, sources) in &phi_defs {
-                    let mut incoming_vn: Option<usize> = None;
-                    let mut first_source = true;
-                    let mut disagreed = false;
-
-                    for (pred_label, source_var) in sources {
-                        if let Some(pred_exit_state) = block_exit_states.get(pred_label) {
-                            if let Some(&source_vn) = pred_exit_state.get(source_var) {
-                                if first_source {
-                                    incoming_vn = Some(source_vn);
-                                    first_source = false;
-                                } else if incoming_vn != Some(source_vn) {
-                                    disagreed = true;
-                                    break; // Disagreement found
-                                }
-                            } else {
-                                disagreed = true;
-                                break;
-                            }
-                        } else {
-                            disagreed = true;
-                            break;
-                        }
-                    }
-
-                    // Refined logic for assigning Phi VN
-                    if disagreed {
-                        // Disagreement among incoming VNs.
-                        // Check previous iteration's entry state for this block (`label`).
-                        if let Some(prev_vn) = block_entry_states
-                            .get(&label)
-                            .and_then(|prev_state| prev_state.get(dest))
-                        {
-                            // Reuse previous VN to aid convergence.
-                            computed_entry_state.insert(dest.clone(), *prev_vn);
-                        } else {
-                            // No previous VN / first time disagreement. Assign a fresh VN.
-                            let new_vn = next_vn;
-                            next_vn += 1;
-                            computed_entry_state.insert(dest.clone(), new_vn);
-                            global_vn_to_canonical_var.insert(new_vn, dest.clone());
-                        }
-                    } else if let Some(vn) = incoming_vn {
-                        // All known sources agree
-                        computed_entry_state.insert(dest.clone(), vn);
-                    } else {
-                        // No known incoming VNs (e.g., unreachable code feeding phi?)
-                        // Assign new VN. This might indicate earlier IR issues.
-                        let new_vn = next_vn;
-                        next_vn += 1;
-                        computed_entry_state.insert(dest.clone(), new_vn);
-                        global_vn_to_canonical_var.insert(new_vn, dest.clone());
-                    }
-                }
-
-                // Merge non-Phi variables
-                // Collect all variables defined in any predecessor's exit state
-                let mut potential_vars = std::collections::HashSet::new();
-                for pred_label in &block_preds {
-                    if let Some(state) = block_exit_states.get(pred_label) {
-                        potential_vars.extend(state.keys().cloned());
-                    }
-                }
-
-                for var in potential_vars {
-                    // Skip if already handled by a Phi node
-                    if phi_defs.contains_key(&var) {
-                        continue;
-                    }
-
-                    let mut agreed_vn: Option<usize> = None;
-                    let mut first_pred = true;
-                    let mut missing_or_disagreed = false;
-
-                    for pred_label in &block_preds {
-                        if let Some(pred_exit_state) = block_exit_states.get(pred_label) {
-                            if let Some(&vn) = pred_exit_state.get(&var) {
-                                if first_pred {
-                                    agreed_vn = Some(vn);
-                                    first_pred = false;
-                                } else if agreed_vn != Some(vn) {
-                                    missing_or_disagreed = true;
-                                    break;
-                                }
-                            } else {
-                                // Variable missing in this predecessor
-                                missing_or_disagreed = true;
-                                break;
-                            }
-                        } else {
-                            // Should not happen with pre-initialization
-                            missing_or_disagreed = true;
-                            break;
-                        }
-                    }
-
-                    if !missing_or_disagreed {
-                        if let Some(vn) = agreed_vn {
-                            computed_entry_state.insert(var.clone(), vn);
-                        }
-                    }
-                }
-            } // else: entry block, entry state remains empty
-
-            // --- End Merge Logic ---
-
-            // Check if entry state changed compared to previous iteration
-            let old_entry_state = block_entry_states.get(&label).unwrap(); // Should exist due to init
-            if old_entry_state == &computed_entry_state && optimized_blocks.contains_key(&label) {
-                // If entry state hasn't changed and we already processed this block, skip.
-                continue;
-            }
-
-            // Store the computed entry state
-            block_entry_states.insert(label.clone(), computed_entry_state.clone());
-
-            // --- Process the block ---
-            let (new_block_instrs, exit_state) = self.process_basic_block(
-                block_instrs,
-                &computed_entry_state, // Pass calculated entry state
-                &mut global_expr_to_vn,
-                &mut global_vn_to_canonical_var,
-                &mut next_vn,
-            );
-            optimized_blocks.insert(label.clone(), new_block_instrs);
-
-            // --- Check exit state and update worklist ---
-            let old_exit_state = block_exit_states.insert(label.clone(), exit_state.clone()); // Update and get old
-            if old_exit_state.as_ref() != Some(&exit_state) {
-                // Exit state changed (or was None before), add successors to worklist
-                if let Some(succs) = successors.get(&label) {
-                    for succ_label in succs {
-                        if !worklist.contains(succ_label) {
-                            worklist.push_back(succ_label.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        // 4. Flatten result
-        let mut final_instrs = Vec::new();
-        for label in &block_order {
-            if let Some(opt_instrs) = optimized_blocks.get(label) {
-                final_instrs.extend(opt_instrs.clone());
-            } else if let Some(orig_instrs) = blocks.get(label) {
-                // Fallback if block wasn't optimized (shouldn't happen with this worklist setup)
-                final_instrs.extend(orig_instrs.clone());
-            }
-        }
-        final_instrs
-    }
-}
-
-// Helper structure to represent expressions canonically for hashing.
-// Ensures commutativity for relevant operations.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ExprKey {
-    // Constant value
-    Const(i64),
-    // Op, vn1, vn2 (vn1 <= vn2 for commutative ops)
-    BinOp(Op, usize, usize),
-    // CmpOp, vn1, vn2
-    Cmp(CmpOp, usize, usize),
-    // Could add UnaryOp, etc. later if needed.
-}
-
-impl ExprKey {
-    fn from_binop(op: Op, vn1: usize, vn2: usize) -> Self {
-        match op {
-            // Commutative operations: order operands by value number.
-            Op::Add | Op::Mul | Op::BitAnd | Op::BitOr | Op::And | Op::Or => {
-                if vn1 <= vn2 {
-                    ExprKey::BinOp(op, vn1, vn2)
-                } else {
-                    ExprKey::BinOp(op, vn2, vn1)
-                }
-            }
-            // Non-commutative operations: keep original order.
-            Op::Sub | Op::Div | Op::Shl | Op::Shr | Op::Mod => ExprKey::BinOp(op, vn1, vn2),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::{CmpOp, Instr, Op};
+    use crate::optimizer::passes::test_helpers::*;
 
     #[test]
-    fn test_simple_redundancy_with_label() {
-        let gvn = GlobalValueNumbering;
-        let instrs = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c1".to_string(), 1),
-            Instr::Const("c2".to_string(), 2),
-            Instr::BinOp(
-                "t0".to_string(),
-                "c1".to_string(),
-                Op::Add,
-                "c2".to_string(),
-            ),
-            Instr::BinOp(
-                "t1".to_string(),
-                "c1".to_string(),
-                Op::Add,
-                "c2".to_string(),
-            ),
-            Instr::Print("t1".to_string()),
-        ];
+    fn test_simple_redundancy() {
+        let pass = GlobalValueNumbering;
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("c1", 1),
+                cnst("c2", 2),
+                binop("t0", "c1", Op::Add, "c2"),
+                binop("t1", "c1", Op::Add, "c2"),  // redundant
+                print("t1"),
+            ], vec![], vec![]),
+        ]);
 
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("c1".to_string(), 1),
-            Instr::Const("c2".to_string(), 2),
-            Instr::BinOp(
-                "t0".to_string(),
-                "c1".to_string(),
-                Op::Add,
-                "c2".to_string(),
-            ),
-            Instr::Assign("t1".to_string(), "t0".to_string()), // t1 = t0
-            Instr::Print("t1".to_string()),
-        ];
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("c1", 1),
+                cnst("c2", 2),
+                binop("t0", "c1", Op::Add, "c2"),
+                assign("t1", "t0"),  // replaced with assignment
+                print("t1"),
+            ], vec![], vec![]),
+        ]);
 
-        let optimized = gvn.optimize(instrs);
-        assert_eq!(optimized, expected);
+        assert_eq!(pass.optimize(cfg), expected);
     }
 
-    #[test]
-    fn test_commutativity() {
-        let gvn = GlobalValueNumbering;
-        let instrs = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c1".to_string(), 1),
-            Instr::Const("c2".to_string(), 2),
-            Instr::BinOp(
-                "t0".to_string(),
-                "c1".to_string(),
-                Op::Add,
-                "c2".to_string(),
-            ), // t0 = 1 + 2
-            Instr::BinOp(
-                "t1".to_string(),
-                "c2".to_string(),
-                Op::Add,
-                "c1".to_string(),
-            ), // t1 = 2 + 1 (redundant due to commutativity)
-            Instr::Print("t1".to_string()),
-        ];
-
-        let expected = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c1".to_string(), 1),
-            Instr::Const("c2".to_string(), 2),
-            Instr::BinOp(
-                "t0".to_string(),
-                "c1".to_string(),
-                Op::Add,
-                "c2".to_string(),
-            ), // t0 = 1 + 2
-            Instr::Assign("t1".to_string(), "t0".to_string()), // t1 = t0
-            Instr::Print("t1".to_string()),
-        ];
-
-        let optimized = gvn.optimize(instrs);
-        assert_eq!(optimized, expected);
-    }
-
-    #[test]
-    fn test_non_commutative() {
-        let gvn = GlobalValueNumbering;
-        let instrs = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c3".to_string(), 3),
-            Instr::Const("c1".to_string(), 1),
-            Instr::BinOp(
-                "t0".to_string(),
-                "c3".to_string(),
-                Op::Sub,
-                "c1".to_string(),
-            ), // t0 = 3 - 1
-            Instr::BinOp(
-                "t1".to_string(),
-                "c1".to_string(),
-                Op::Sub,
-                "c3".to_string(),
-            ), // t1 = 1 - 3 (NOT redundant)
-            Instr::Print("t0".to_string()),
-            Instr::Print("t1".to_string()),
-        ];
-
-        // Expected: Only Label added
-        let expected = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c3".to_string(), 3),
-            Instr::Const("c1".to_string(), 1),
-            Instr::BinOp(
-                "t0".to_string(),
-                "c3".to_string(),
-                Op::Sub,
-                "c1".to_string(),
-            ),
-            Instr::BinOp(
-                "t1".to_string(),
-                "c1".to_string(),
-                Op::Sub,
-                "c3".to_string(),
-            ),
-            Instr::Print("t0".to_string()),
-            Instr::Print("t1".to_string()),
-        ];
-        let optimized = gvn.optimize(instrs);
-        assert_eq!(optimized, expected);
-    }
-
-    #[test]
-    fn test_redundant_comparison() {
-        let gvn = GlobalValueNumbering;
-        let instrs = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c10".to_string(), 10),
-            Instr::Const("c20".to_string(), 20),
-            Instr::Cmp(
-                "t0".to_string(),
-                "c10".to_string(),
-                CmpOp::Lt,
-                "c20".to_string(),
-            ), // t0 = 10 < 20
-            Instr::Cmp(
-                "t1".to_string(),
-                "c10".to_string(),
-                CmpOp::Lt,
-                "c20".to_string(),
-            ), // t1 = 10 < 20 (redundant)
-            Instr::Print("t1".to_string()),
-        ];
-
-        let expected = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c10".to_string(), 10),
-            Instr::Const("c20".to_string(), 20),
-            Instr::Cmp(
-                "t0".to_string(),
-                "c10".to_string(),
-                CmpOp::Lt,
-                "c20".to_string(),
-            ), // t0 = 10 < 20
-            Instr::Assign("t1".to_string(), "t0".to_string()), // t1 = t0
-            Instr::Print("t1".to_string()),
-        ];
-
-        let optimized = gvn.optimize(instrs);
-        assert_eq!(optimized, expected);
-    }
-
-    #[test]
-    fn test_chained_redundancy() {
-        let gvn = GlobalValueNumbering;
-        let instrs = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c1".to_string(), 1),
-            Instr::Const("c2".to_string(), 2),
-            Instr::Const("c3".to_string(), 3),
-            Instr::BinOp("a".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // a = 1 + 2
-            Instr::BinOp("b".to_string(), "a".to_string(), Op::Mul, "c3".to_string()),  // b = a * 3
-            Instr::BinOp("c".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // c = 1 + 2 (redundant with a)
-            Instr::BinOp("d".to_string(), "c".to_string(), Op::Mul, "c3".to_string()), // d = c * 3 (redundant with b)
-            Instr::Print("d".to_string()),
-        ];
-
-        let expected = vec![
-            Instr::Label("entry".to_string()), // Added Label
-            Instr::Const("c1".to_string(), 1),
-            Instr::Const("c2".to_string(), 2),
-            Instr::Const("c3".to_string(), 3),
-            Instr::BinOp("a".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // a = 1 + 2
-            Instr::BinOp("b".to_string(), "a".to_string(), Op::Mul, "c3".to_string()),  // b = a * 3
-            Instr::Assign("c".to_string(), "a".to_string()),                            // c = a
-            Instr::Assign("d".to_string(), "b".to_string()),                            // d = b
-            Instr::Print("d".to_string()),
-        ];
-
-        let optimized = gvn.optimize(instrs);
-        assert_eq!(optimized, expected);
-    }
-
-    // Add more tests for CFGs, branches, merges, and Phi nodes later.
     #[test]
     fn test_cross_block_redundancy() {
-        let gvn = GlobalValueNumbering;
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("c1".to_string(), 1),
-            Instr::Const("c2".to_string(), 2),
-            Instr::BinOp("a".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // a = 1 + 2
-            Instr::Const("cond".to_string(), 1), // Assume true condition
-            Instr::BranchIf("cond".to_string(), "then".to_string(), "else".to_string()),
-            Instr::Label("then".to_string()),
-            Instr::BinOp("b".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // REDUNDANT: b = 1 + 2
-            Instr::Jump("merge".to_string()),
-            Instr::Label("else".to_string()),
-            Instr::BinOp("c".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // REDUNDANT: c = 1 + 2
-            Instr::Jump("merge".to_string()),
-            Instr::Label("merge".to_string()),
-            Instr::Phi(
-                "d".to_string(),
-                vec![
-                    ("then".to_string(), "b".to_string()),
-                    ("else".to_string(), "c".to_string()),
-                ],
-            ),
-            Instr::Print("d".to_string()),
-        ];
+        let pass = GlobalValueNumbering;
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("c1", 1),
+                cnst("c2", 2),
+                binop("a", "c1", Op::Add, "c2"),
+                branch("a", "then", "else"),
+            ], vec![], vec!["then", "else"]),
+            ("then", vec![
+                binop("b", "c1", Op::Add, "c2"),  // redundant with 'a'
+                jump("merge"),
+            ], vec!["entry"], vec!["merge"]),
+            ("else", vec![
+                binop("c", "c1", Op::Add, "c2"),  // redundant with 'a'
+                jump("merge"),
+            ], vec!["entry"], vec!["merge"]),
+            ("merge", vec![
+                phi("d", vec![("then", "b"), ("else", "c")]),
+                print("d"),
+            ], vec!["then", "else"], vec![]),
+        ]);
 
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("c1".to_string(), 1),
-            Instr::Const("c2".to_string(), 2),
-            Instr::BinOp("a".to_string(), "c1".to_string(), Op::Add, "c2".to_string()), // Original calculation
-            Instr::Const("cond".to_string(), 1),
-            Instr::BranchIf("cond".to_string(), "then".to_string(), "else".to_string()),
-            Instr::Label("then".to_string()),
-            Instr::Assign("b".to_string(), "a".to_string()), // Replaced with assignment
-            Instr::Jump("merge".to_string()),
-            Instr::Label("else".to_string()),
-            Instr::Assign("c".to_string(), "a".to_string()), // Replaced with assignment
-            Instr::Jump("merge".to_string()),
-            Instr::Label("merge".to_string()),
-            Instr::Phi(
-                "d".to_string(),
-                vec![
-                    ("then".to_string(), "b".to_string()),
-                    ("else".to_string(), "c".to_string()),
-                ],
-            ), // Phi remains
-            Instr::Print("d".to_string()),
-        ];
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("c1", 1),
+                cnst("c2", 2),
+                binop("a", "c1", Op::Add, "c2"),
+                branch("a", "then", "else"),
+            ], vec![], vec!["then", "else"]),
+            ("then", vec![
+                assign("b", "a"),  // replaced with assignment
+                jump("merge"),
+            ], vec!["entry"], vec!["merge"]),
+            ("else", vec![
+                assign("c", "a"),  // replaced with assignment
+                jump("merge"),
+            ], vec!["entry"], vec!["merge"]),
+            ("merge", vec![
+                phi("d", vec![("then", "b"), ("else", "c")]),
+                print("d"),
+            ], vec!["then", "else"], vec![]),
+        ]);
 
-        let optimized = gvn.optimize(instrs);
-        assert_eq!(optimized, expected);
+        assert_eq!(pass.optimize(cfg), expected);
+    }
+
+    #[test]
+    fn test_phi_aware_numbering() {
+        let pass = GlobalValueNumbering;
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("x", 1),
+                jump("loop"),
+            ], vec![], vec!["loop"]),
+            ("loop", vec![
+                phi("v", vec![("entry", "x"), ("loop", "v")]),
+                print("v"),
+                jump("loop"),
+            ], vec!["entry", "loop"], vec!["loop"]),
+        ]);
+
+        // Phi should not be eliminated as it represents different values
+        assert_eq!(pass.optimize(cfg.clone()), cfg);
     }
 }

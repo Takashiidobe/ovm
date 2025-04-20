@@ -1,5 +1,4 @@
 pub mod algebraic_simplification;
-pub mod branch_elimination;
 pub mod constant_folding;
 pub mod constant_propagation;
 pub mod copy_propagation;
@@ -9,11 +8,11 @@ pub mod identity_elimination;
 pub mod move_coalescing;
 pub mod pass;
 pub mod strength_reduction;
+mod test_helpers;
 
 use crate::optimizer::CFG;
 
 pub use algebraic_simplification::AlgebraicSimplification;
-pub use branch_elimination::BranchElimination;
 pub use constant_folding::ConstantFolding;
 pub use constant_propagation::ConstantPropagation;
 pub use copy_propagation::CopyPropagation;
@@ -32,7 +31,6 @@ pub enum PassType {
     DeadCodeElimination,
     GlobalValueNumbering,
     MoveCoalescing,
-    BranchElimination,
     StrengthReduction,
     IdentityElimination,
     AlgebraicSimplification,
@@ -45,7 +43,6 @@ impl Optimizer {
     /// Run all available optimization passes in order, iterating core passes until fixed point
     pub fn run_all(&self, instrs: CFG) -> CFG {
         let cf = ConstantFolding;
-        let be = BranchElimination;
         let dce = DeadCodeElimination;
         let mc = MoveCoalescing;
         let sr = StrengthReduction;
@@ -65,7 +62,6 @@ impl Optimizer {
             current_instrs = ie.optimize(current_instrs);
             current_instrs = algs.optimize(current_instrs);
             current_instrs = sr.optimize(current_instrs);
-            current_instrs = be.optimize(current_instrs);
             current_instrs = dce.optimize(current_instrs);
 
             // Check if the instructions changed
@@ -83,7 +79,7 @@ impl Optimizer {
     }
 
     /// Run specific optimization passes in the given order
-    pub fn run(&self, instrs: Vec<Instr>, passes: Vec<PassType>) -> Vec<Instr> {
+    pub fn run(&self, instrs: CFG, passes: Vec<PassType>) -> CFG {
         let mut result = instrs;
 
         for pass_type in passes {
@@ -106,10 +102,6 @@ impl Optimizer {
                 }
                 PassType::MoveCoalescing => {
                     let pass = MoveCoalescing;
-                    result = pass.optimize(result);
-                }
-                PassType::BranchElimination => {
-                    let pass = BranchElimination;
                     result = pass.optimize(result);
                 }
                 PassType::StrengthReduction => {
@@ -139,111 +131,84 @@ impl Optimizer {
 mod tests {
     use super::*;
     use crate::optimizer::{CmpOp, Instr, Op};
+    use test_helpers::*;
 
     #[test]
     fn test_optimizer() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 2),
-            Instr::Const("t1".to_string(), 3),
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Add,
-                "t1".to_string(),
-            ),
-            Instr::Const("t_unused".to_string(), 999),
-            Instr::Print("t2".to_string()),
-        ];
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 2),
+                cnst("t1", 3),
+                binop("t2", "t0", Op::Add, "t1"),
+                cnst("t_unused", 999),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
         let optimizer = Optimizer;
-        let optimized = optimizer.run_all(instrs);
+        let optimized = optimizer.run_all(cfg);
 
-        // after the constant folding pass, t0 and t1 are considered dead, since they aren't used
-        // again.
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t2".to_string(), 5),
-            Instr::Print("t2".to_string()),
-        ];
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t2", 5),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
-        assert_eq!(optimized, expected);
+        assert_eq!(optimized.blocks, expected.blocks);
     }
 
     #[test]
     fn test_optimizer_relational_operators() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t0".to_string(), 10),
-            Instr::Const("t1".to_string(), 20),
-            Instr::Cmp(
-                "t2".to_string(),
-                "t0".to_string(),
-                CmpOp::Lt,
-                "t1".to_string(),
-            ), // 10 < 20 => true (1)
-            Instr::Const("t_unused".to_string(), 999),
-            Instr::Print("t2".to_string()),
-        ];
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 10),
+                cnst("t1", 20),
+                cmp("t2", "t0", CmpOp::Lt, "t1"),
+                cnst("t_unused", 999),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
         let optimizer = Optimizer;
-        let optimized = optimizer.run_all(instrs);
+        let optimized = optimizer.run_all(cfg);
 
-        // After constant folding: t2 = 1
-        // Dead code elimination removes t0, t1, and t_unused
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t2".to_string(), 1),
-            Instr::Print("t2".to_string()),
-        ];
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t2", 1),
+                print("t2"),
+            ], vec![], vec![]),
+        ]);
 
-        assert_eq!(optimized, expected);
+        assert_eq!(optimized.blocks, expected.blocks);
     }
 
     #[test]
     fn test_optimizer_full_chain_folding() {
-        let instrs = vec![
-            Instr::Label("entry".to_string()),
-            // Arithmetic chain: 4 + 5 = 9
-            Instr::Const("t0".to_string(), 4),
-            Instr::Const("t1".to_string(), 5),
-            Instr::BinOp(
-                "t2".to_string(),
-                "t0".to_string(),
-                Op::Add,
-                "t1".to_string(),
-            ),
-            // 9 * 2 = 18
-            Instr::Const("t3".to_string(), 2),
-            Instr::BinOp(
-                "t4".to_string(),
-                "t2".to_string(),
-                Op::Mul,
-                "t3".to_string(),
-            ),
-            // 18 == 18 => true (1)
-            Instr::Const("t5".to_string(), 18),
-            Instr::Cmp(
-                "t6".to_string(),
-                "t4".to_string(),
-                CmpOp::Eq,
-                "t5".to_string(),
-            ),
-            // Dead code
-            Instr::Const("t_unused".to_string(), 999),
-            // Final print
-            Instr::Print("t6".to_string()),
-        ];
+        let cfg = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t0", 4),
+                cnst("t1", 5),
+                binop("t2", "t0", Op::Add, "t1"),
+                cnst("t3", 2),
+                binop("t4", "t2", Op::Mul, "t3"),
+                cnst("t5", 18),
+                cmp("t6", "t4", CmpOp::Eq, "t5"),
+                cnst("t_unused", 999),
+                print("t6"),
+            ], vec![], vec![]),
+        ]);
 
         let optimizer = Optimizer;
-        let optimized = optimizer.run_all(instrs);
+        let optimized = optimizer.run_all(cfg);
 
-        let expected = vec![
-            Instr::Label("entry".to_string()),
-            Instr::Const("t6".to_string(), 1), // final folded boolean result
-            Instr::Print("t6".to_string()),
-        ];
+        let expected = create_test_cfg(vec![
+            ("entry", vec![
+                cnst("t6", 1),
+                print("t6"),
+            ], vec![], vec![]),
+        ]);
 
-        assert_eq!(optimized, expected);
+        assert_eq!(optimized.blocks, expected.blocks);
     }
 }

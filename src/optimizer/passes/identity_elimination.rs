@@ -49,34 +49,9 @@ impl Pass for IdentityElimination {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::{CFG, BasicBlock, Instr, Op};
+    use crate::optimizer::{CFG, Instr, Op};
     use indexmap::IndexMap;
-    use std::collections::HashSet;
-
-    // Helper to create a simple CFG for testing
-    fn create_test_cfg(blocks_data: Vec<(&str, Vec<Instr>, Vec<&str>, Vec<&str>)>) -> CFG {
-        let mut blocks = IndexMap::new();
-        for (label, instrs, preds, succs) in blocks_data {
-            blocks.insert(
-                label.to_string(),
-                BasicBlock {
-                    label: label.to_string(),
-                    instrs,
-                    preds: preds.into_iter().map(|s| s.to_string()).collect::<HashSet<_>>().into_iter().collect(),
-                    succs: succs.into_iter().map(|s| s.to_string()).collect::<HashSet<_>>().into_iter().collect(),
-                },
-            );
-        }
-        CFG { blocks, current_block: None }
-    }
-
-     // Helper to create instructions more easily
-     fn assign(dest: &str, src: &str) -> Instr { Instr::Assign(dest.to_string(), src.to_string()) }
-     fn cnst(dest: &str, val: i64) -> Instr { Instr::Const(dest.to_string(), val) }
-     fn print(src: &str) -> Instr { Instr::Print(src.to_string()) }
-     fn binop(dest: &str, l: &str, op: Op, r: &str) -> Instr { Instr::BinOp(dest.to_string(), l.to_string(), op, r.to_string()) }
-     fn jump(target: &str) -> Instr { Instr::Jump(target.to_string()) }
-
+    use crate::optimizer::passes::test_helpers::*;
 
     #[test]
     fn test_removes_identity_assign_cfg() {
