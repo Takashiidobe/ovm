@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 
 // Make sure CFG is imported
@@ -129,9 +129,9 @@ impl LinearScan {
 
 impl RegisterAllocator for LinearScan {
     // Updated signature
-    fn allocate(&self, cfg: &CFG) -> (CFG, HashMap<String, Location>) {
+    fn allocate(&self, cfg: &CFG) -> (CFG, BTreeMap<String, Location>) {
         if cfg.blocks.is_empty() {
-            return (cfg.clone(), HashMap::new());
+            return (cfg.clone(), BTreeMap::new());
         }
 
         // --- 1. Linearize Instructions & Build Mappings ---
@@ -163,7 +163,7 @@ impl RegisterAllocator for LinearScan {
         }
         let total_linear_instrs = linearized_instrs.len();
         if total_linear_instrs == 0 {
-             return (cfg.clone(), HashMap::new()); // Handle empty CFG case
+             return (cfg.clone(), BTreeMap::new()); // Handle empty CFG case
         }
 
 
@@ -418,7 +418,7 @@ impl RegisterAllocator for LinearScan {
             .map(|s| s.to_string())
             .filter(|r| !precolored_regs.contains(r)) // Don't initially offer precolored regs
             .collect();
-        let mut final_locations = HashMap::new();
+        let mut final_locations = BTreeMap::new();
 
         for current_interval_ref in sorted_intervals {
             let mut current = current_interval_ref.clone(); // Clone to modify location

@@ -3,6 +3,8 @@ pub mod registers;
 
 use std::collections::{HashMap, HashSet};
 
+use indexmap::IndexMap;
+
 use crate::frontend::{
     expr::Expr,
     stmt::Stmt,
@@ -70,7 +72,7 @@ pub struct BasicBlock {
 
 #[derive(Default, Debug, PartialEq, Clone)]
 pub struct CFG {
-    pub blocks: HashMap<String, BasicBlock>,
+    pub blocks: IndexMap<String, BasicBlock>,
     pub current_block: Option<String>,
 }
 
@@ -125,17 +127,13 @@ pub struct SSA {
 
 impl Default for SSA {
     fn default() -> Self {
-        let mut ssa = Self {
+        Self {
             scopes: vec![HashMap::new()],
             temp_counter: Default::default(),
             label_counter: Default::default(),
             var_versions: Default::default(),
             cfg: Default::default(),
-        };
-        let entry_label = "entry".to_string();
-        ssa.cfg.start_block(&entry_label);
-        ssa.cfg.current_block = Some(entry_label);
-        ssa
+        }
     }
 }
 
@@ -185,42 +183,53 @@ impl SSA {
         name
     }
 
-    pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> CFG {
-        let mut main_stmts = Vec::new();
-        let mut func_stmts = Vec::new();
-        for stmt in stmts {
-            if matches!(stmt, Stmt::Function { .. }) {
-                func_stmts.push(stmt);
-            } else {
-                main_stmts.push(stmt);
-            }
-        }
+    pub fn program_to_ir(&mut self, program: &[Stmt]) -> CFG {
+        let main_label = "main".to_string(); // Use "main" as the entry point
 
-        let main_label = "main".to_string();
-        let entry_label = self.cfg.current_block.clone().expect("Entry block not set");
-
+        // Start the main block directly
         self.cfg.start_block(&main_label);
-        self.cfg.add_edge(&entry_label, &main_label);
         self.cfg.current_block = Some(main_label.clone());
 
-        for stmt in main_stmts {
-            eprintln!("Processing main stmt: {:?}", stmt);
-            self.stmt_to_ir(stmt);
+        // Keep track of the label of the block active *before* the last statement potentially changed it.
+        // Initialize with main_label.
+        let mut last_natural_flow_block = main_label.clone();
+
+        // Process the program statements
+        for stmt in program{
+            // Before processing a statement that might change control flow (like If),
+            // record the current block label.
+            if let Some(current) = &self.cfg.current_block {
+                 last_natural_flow_block = current.clone();
+            }
+            self.stmt_to_ir(stmt); // This might change self.cfg.current_block
         }
 
-        if self.cfg.current_block.is_some() {
-            self.cfg.emit(Instr::Ret { value: None });
+        // Determine the block where execution logically ends.
+        // If the last statement was an If/Loop, current_block is the merge block.
+        // If the last statement was a simple expression or assignment, current_block is where it was emitted.
+        // If the last statement was an explicit Return, current_block might be None.
+        // Use the block that was active *before* the last statement if current_block is None now.
+        let final_block_label = self.cfg.current_block.clone().unwrap_or(last_natural_flow_block);
+
+
+        // Check if this final block needs a terminator
+        let needs_terminator = match self.cfg.blocks.get(&final_block_label).and_then(|b| b.instrs.last()) {
+            Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => false,
+            _ => true, // Needs a terminator
+        };
+
+        if needs_terminator {
+            // Add the implicit return to the determined final block
+            // Temporarily set current_block to add the instruction
+            let original_current = self.cfg.current_block.clone();
+            self.cfg.current_block = Some(final_block_label.clone()); // Clone label here
+            self.cfg.emit(Instr::Ret { value: None }); // Default return 0
+            self.cfg.current_block = original_current; // Restore
         }
 
-        for stmt in func_stmts {
-            eprintln!("Processing func stmt: {:?}", stmt);
-            let current_block_backup = self.cfg.current_block.clone();
-            self.cfg.current_block = None;
-            self.stmt_to_ir(stmt);
-            self.cfg.current_block = current_block_backup;
-        }
+        self.cfg.current_block = None; // Ensure current_block is cleared
 
-        self.cfg.clone()
+        self.cfg.clone() // Return the constructed CFG
     }
 
     fn stmt_to_ir(&mut self, stmt: &Stmt) -> String {
@@ -369,89 +378,94 @@ impl SSA {
 
                 self.new_temp()
             }
-            Stmt::If {
+             Stmt::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
+                // 1. Get current block label (predecessor)
                 let pre_if_label = self.cfg.current_block.clone().expect("If statement needs a current block");
 
+                // 2. Evaluate condition (emits instructions into pre_if_label block)
                 let cond_t = self.expr_to_ir(condition);
 
+                // 3. Create labels
                 let then_label = self.new_label("if_then");
                 let else_label = self.new_label("if_else");
                 let merge_label = self.new_label("if_merge");
 
-                // --- Create Merge Block *before* branches ---
-                // This ensures the block exists when edges are added from then/else.
+                // 4. Create Merge Block *instance* early (doesn't set current_block)
+                self.cfg.start_block(&then_label);
+                self.cfg.start_block(&else_label);
                 self.cfg.start_block(&merge_label);
-                // We don't set current_block to merge_label yet.
+                // Note: start_block sets current_block, so we must reset it
+                self.cfg.current_block = Some(pre_if_label.clone()); // Restore current block to pre_if_label
 
-                // --- Emit Conditional Branch from pre_if_label block ---
+                // 5. Emit Conditional Branch into pre_if_label block
+                //    current_block is still pre_if_label here. This is CRITICAL.
                 self.cfg.emit(Instr::BranchIf(
                     cond_t.clone(),
                     then_label.clone(),
                     else_label.clone(),
                 ));
-                // Add edges from pre_if to then/else *after* emitting branch
-                // self.cfg.add_edge(&pre_if_label, &then_label); // Moved down
-                // self.cfg.add_edge(&pre_if_label, &else_label); // Moved down
-                self.cfg.current_block = None; // pre_if_label block is now terminated
+
+                // 6. Add edges from pre_if_label to then/else blocks
+                self.cfg.add_edge(&pre_if_label, &then_label);
+                self.cfg.add_edge(&pre_if_label, &else_label);
+
+                // 7. Terminate pre_if_label block processing - current_block becomes None
+                self.cfg.current_block = None;
 
 
                 // --- Then Branch ---
-                self.cfg.start_block(&then_label); // Create then block
-                self.cfg.add_edge(&pre_if_label, &then_label); // Add edge now
-                self.cfg.current_block = Some(then_label.clone());
+                self.cfg.start_block(&then_label); // Define the 'then' block
+                self.cfg.current_block = Some(then_label.clone()); // Set current for processing
                 let then_scope = self.with_scope(|ssa| {
-                    ssa.stmt_to_ir(then_branch); // Process the then branch statements
+                    ssa.stmt_to_ir(then_branch);
                     ssa.scopes.last().cloned().unwrap_or_default()
                 });
-                // Ensure 'then' block jumps to merge *if* it hasn't terminated otherwise
-                if self.cfg.current_block.as_ref() == Some(&then_label) {
-                    self.cfg.emit(Instr::Jump(merge_label.clone()));
-                    self.cfg.add_edge(&then_label, &merge_label); // Add edge to merge (merge block exists now)
-                } else if self.cfg.blocks.contains_key(&then_label) {
-                     // Block exists but terminated differently (e.g., return).
-                     // Still need edge for CFG completeness if block wasn't empty.
-                     // Check if the block actually has instructions before adding edge.
-                     if !self.cfg.blocks[&then_label].instrs.is_empty() {
-                          // Add edge even if terminated, for liveness/analysis? Or skip?
-                          // Let's add it for now.
-                          self.cfg.add_edge(&then_label, &merge_label);
+                // Check if 'then' block needs explicit jump to merge
+                let then_final_label = self.cfg.current_block.clone(); // Label after processing then_branch
+                if let Some(current_then_label) = then_final_label {
+                     // If the block is still active (didn't return/break/etc.)
+                     let needs_jump = match self.cfg.blocks.get(&current_then_label).and_then(|b| b.instrs.last()) {
+                         Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => false,
+                         _ => true,
+                     };
+                     if needs_jump {
+                         self.cfg.emit(Instr::Jump(merge_label.clone()));
+                         self.cfg.add_edge(&current_then_label, &merge_label);
                      }
                 }
-                self.cfg.current_block = None; // Then branch finished
+                self.cfg.current_block = None; // Then branch processing finished
 
 
                 // --- Else Branch ---
-                self.cfg.start_block(&else_label); // Create else block
-                self.cfg.add_edge(&pre_if_label, &else_label); // Add edge now
-                self.cfg.current_block = Some(else_label.clone());
+                self.cfg.start_block(&else_label); // Define the 'else' block
+                self.cfg.current_block = Some(else_label.clone()); // Set current for processing
                 let else_scope = self.with_scope(|ssa| {
-                    if let Some(else_stmt) = &**else_branch { // Use if let Some to handle Option<&Stmt>
-                        ssa.stmt_to_ir(else_stmt); // Process else branch statements
-                    } else {
-                        // Empty else block - still needs to jump to merge
-                        // No value produced, handled by Phi logic later
+                    if let Some(else_stmt) = &**else_branch {
+                        ssa.stmt_to_ir(else_stmt);
                     }
                     ssa.scopes.last().cloned().unwrap_or_default()
                 });
-                 // Ensure 'else' block jumps to merge if it hasn't terminated otherwise
-                if self.cfg.current_block.as_ref() == Some(&else_label) {
-                    self.cfg.emit(Instr::Jump(merge_label.clone()));
-                    self.cfg.add_edge(&else_label, &merge_label); // Add edge to merge (merge block exists now)
-                } else if self.cfg.blocks.contains_key(&else_label) {
-                     // Block exists but terminated differently. Add edge if not empty.
-                     if !self.cfg.blocks[&else_label].instrs.is_empty() {
-                         self.cfg.add_edge(&else_label, &merge_label);
+                // Check if 'else' block needs explicit jump to merge
+                let else_final_label = self.cfg.current_block.clone();
+                if let Some(current_else_label) = else_final_label {
+                     let needs_jump = match self.cfg.blocks.get(&current_else_label).and_then(|b| b.instrs.last()) {
+                         Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => false,
+                         _ => true,
+                     };
+                     if needs_jump {
+                         self.cfg.emit(Instr::Jump(merge_label.clone()));
+                         self.cfg.add_edge(&current_else_label, &merge_label);
                      }
                 }
-                self.cfg.current_block = None; // Else branch finished
+                self.cfg.current_block = None; // Else branch processing finished
 
 
-                // --- Merge Block (already created) ---
-                // Set current block to merge block to emit Phi nodes
+                // --- Merge Block ---
+                // Set current block to merge block to emit Phi nodes AND for subsequent statements
                 self.cfg.current_block = Some(merge_label.clone());
 
                 self.enter_scope(); // Enter merge scope
@@ -463,88 +477,50 @@ impl SSA {
                     .cloned()
                     .unwrap_or_default();
 
-                let all_vars: HashSet<_> = then_scope // Use HashSet directly
+                let all_vars: HashSet<_> = then_scope
                     .keys()
                     .chain(else_scope.keys())
-                    .chain(pre_if_scope.keys()) // Include vars defined before the if
+                    .chain(pre_if_scope.keys())
                     .cloned()
                     .collect();
 
-                for var_name in &all_vars { // Iterate over reference
+                for var_name in &all_vars {
                     let then_val = then_scope.get(var_name);
                     let else_val = else_scope.get(var_name);
-                    let pre_if_val = pre_if_scope.get(var_name); // Value before the if
+                    let pre_if_val = pre_if_scope.get(var_name);
 
                     match (then_val, else_val) {
-                        // Defined/Modified in both branches
-                        (Some(t_val), Some(e_val)) => {
+                        // ... (existing Phi logic - seems okay) ...
+                        (Some(t_val), Some(e_val)) => { // Both defined
                             if t_val != e_val {
-                                // Different values, need Phi
                                 let phi_res = self.new_temp();
-                                self.cfg.emit(Instr::Phi(
-                                    phi_res.clone(),
-                                    vec![
-                                        (then_label.clone(), t_val.clone()),
-                                        (else_label.clone(), e_val.clone()),
-                                    ],
-                                ));
-                                self.assign_variable(var_name, &phi_res); // Use var_name directly
-                            } else {
-                                // Same value, no Phi needed, just assign
-                                self.assign_variable(var_name, t_val);
-                            }
-                        }
-                        // Defined/Modified only in 'then'
-                        (Some(t_val), None) => {
-                            if let Some(pre_val) = pre_if_val {
-                                // Need Phi with 'then' value and pre-if value
-                                let phi_res = self.new_temp();
-                                self.cfg.emit(Instr::Phi(
-                                    phi_res.clone(),
-                                    vec![
-                                        (then_label.clone(), t_val.clone()),
-                                        (else_label.clone(), pre_val.clone()), // Use value from before if
-                                    ],
-                                ));
+                                self.cfg.emit(Instr::Phi(phi_res.clone(), vec![(then_label.clone(), t_val.clone()), (else_label.clone(), e_val.clone())]));
                                 self.assign_variable(var_name, &phi_res);
-                            } else {
-                                // Variable introduced only in 'then'.
-                                eprintln!("Warning: Variable '{}' defined only in 'then' branch.", var_name);
-                                // Assigning t_val might be incorrect. Consider undef/error?
-                                // For now, assign it, but this relies on dominance or specific language rules.
-                                self.assign_variable(var_name, t_val);
-                            }
+                            } else { self.assign_variable(var_name, t_val); }
                         }
-                         // Defined/Modified only in 'else'
-                        (None, Some(e_val)) => {
-                             if let Some(pre_val) = pre_if_val {
-                                // Need Phi with pre-if value and 'else' value
-                                let phi_res = self.new_temp();
-                                self.cfg.emit(Instr::Phi(
-                                    phi_res.clone(),
-                                    vec![
-                                        (then_label.clone(), pre_val.clone()), // Use value from before if
-                                        (else_label.clone(), e_val.clone()),
-                                    ],
-                                ));
-                                self.assign_variable(var_name, &phi_res);
-                            } else {
-                                eprintln!("Warning: Variable '{}' defined only in 'else' branch.", var_name);
-                                self.assign_variable(var_name, e_val);
-                            }
-                        }
-                        // Not defined/modified in either branch
-                        (None, None) => {
+                        (Some(t_val), None) => { // Only in Then
                             if let Some(pre_val) = pre_if_val {
-                                // Variable existed before, carries through unchanged. Assign it.
-                                self.assign_variable(var_name, pre_val);
-                            }
-                            // Otherwise, variable doesn't exist here.
+                                let phi_res = self.new_temp();
+                                self.cfg.emit(Instr::Phi(phi_res.clone(), vec![(then_label.clone(), t_val.clone()), (else_label.clone(), pre_val.clone())]));
+                                self.assign_variable(var_name, &phi_res);
+                            } else { self.assign_variable(var_name, t_val); /* Warning emitted before */ }
+                        }
+                        (None, Some(e_val)) => { // Only in Else
+                            if let Some(pre_val) = pre_if_val {
+                                let phi_res = self.new_temp();
+                                self.cfg.emit(Instr::Phi(phi_res.clone(), vec![(then_label.clone(), pre_val.clone()), (else_label.clone(), e_val.clone())]));
+                                self.assign_variable(var_name, &phi_res);
+                            } else { self.assign_variable(var_name, e_val); /* Warning emitted before */ }
+                        }
+                        (None, None) => { // Neither branch
+                            if let Some(pre_val) = pre_if_val { self.assign_variable(var_name, pre_val); }
                         }
                     }
-                }
+                } // End Phi loop
 
-                // If statements don't produce a value in this context
+                // After processing Phis, the merge block remains the current continuation point.
+                // Leave self.cfg.current_block as Some(merge_label)
+
                 self.new_temp() // Return dummy temp
             }
             Stmt::Block { statements } => {

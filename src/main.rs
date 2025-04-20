@@ -54,6 +54,8 @@ fn main() {
     let allocator = LinearScan;
     let (allocated_instrs, reg_map) = allocator.allocate(&ssa_instrs);
 
+    dbg!(&allocated_instrs);
+
     // Generate assembly
     let asm = backend.generate_assembly(&allocated_instrs, &reg_map);
 

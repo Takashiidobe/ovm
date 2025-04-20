@@ -1,6 +1,6 @@
 pub mod linear_scan;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use crate::optimizer::CFG;
 
 pub const AVAILABLE_REGS: [&str; 6] = ["%rbx", "%rbp", "%r12", "%r13", "%r14", "%r15"];
@@ -12,5 +12,5 @@ pub enum Location {
 }
 
 pub trait RegisterAllocator {
-    fn allocate(&self, instrs: &CFG) -> (CFG, HashMap<String, Location>);
+    fn allocate(&self, instrs: &CFG) -> (CFG, BTreeMap<String, Location>);
 }

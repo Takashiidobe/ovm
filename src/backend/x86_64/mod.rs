@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap}; // Removed HashSet
+use std::collections::BTreeMap;
 
 use crate::optimizer::{CFG, registers::Location, CmpOp, Instr, Op}; // Added cfg::CFG
 
@@ -17,7 +17,7 @@ impl Backend for Codegen {
     fn generate_assembly(
         &mut self,
         cfg: &CFG, // Changed from instrs: &[Instr]
-        locations: &HashMap<String, Location>,
+        locations: &BTreeMap<String, Location>,
     ) -> String {
         self.asm.clear(); // Clear previous assembly
 
