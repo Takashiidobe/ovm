@@ -1,322 +1,322 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap}; // Removed HashSet
 
-use crate::optimizer::{registers::Location, CmpOp, Instr, Op};
+use crate::optimizer::{CFG, registers::Location, CmpOp, Instr, Op}; // Added cfg::CFG
 
 use super::Backend;
 
 #[derive(Default, Clone)]
 pub struct Codegen {
-    phi_prep_moves: BTreeMap<(String, String), Vec<(String, String)>>,
+    // Removed phi_prep_moves and current_block
     asm: Vec<String>,
-    current_block: Option<String>,
 }
 
-// Helper struct for basic block info during preprocessing
-#[derive(Debug, Clone)]
-pub struct BlockInfo {
-    label: String,
-    start_idx: usize,
-    end_idx: usize, // Index of the last instruction (usually Jump or BranchIf)
-    successors: Vec<String>,
-    // We might not need predecessors explicitly if we modify Phis in place
-}
+// Removed BlockInfo struct
 
 impl Backend for Codegen {
+    // Updated signature to accept CFG
     fn generate_assembly(
         &mut self,
-        instrs: &[Instr],
+        cfg: &CFG, // Changed from instrs: &[Instr]
         locations: &HashMap<String, Location>,
     ) -> String {
-        // --- Pre-processing Pass: Build CFG, Insert Jumps, Map Edges ---
-        let (processed_instrs, blocks_map, edge_to_logical_pred) =
-            self.preprocess_ir_and_build_maps(instrs);
+        self.asm.clear(); // Clear previous assembly
 
-        // --- Pass 1 (on processed instrs): Map Phi destinations to block labels ---
-        let mut phi_locations: HashMap<String, String> = HashMap::new();
-        let mut current_block_label_for_phi = "main".to_string();
-        if let Some(first_label_instr) = processed_instrs
-            .iter()
-            .find(|instr| matches!(instr, Instr::Label(_)))
-        {
-            if let Instr::Label(label) = first_label_instr {
-                current_block_label_for_phi = label.clone();
-            }
-        } else {
-            eprintln!(
-                "Warning: No labels found in processed IR for phi location mapping, assuming 'main'."
-            );
-        }
-        for instr in &processed_instrs {
-            if let Instr::Label(label) = instr {
-                current_block_label_for_phi = label.clone();
-            }
-            if let Instr::Phi(dest, _) = instr {
-                phi_locations.insert(dest.clone(), current_block_label_for_phi.clone());
-            }
-        }
-
-        // --- Pass 2 (using original instrs for Phi defs): Populate phi_prep_moves ---
-        self.phi_prep_moves.clear();
-        for (phi_dest_ssa, phi_block_label) in &phi_locations {
-            // Find the Phi instruction definition in the *original* list
-            let phi_instr = instrs
-                .iter()
-                .find(|i| matches!(i, Instr::Phi(d,_) if d == phi_dest_ssa));
-            if let Some(Instr::Phi(_, preds)) = phi_instr {
-                for (logical_pred_label, pred_val_ssa) in preds {
-                    // Find the actual predecessor corresponding to this logical predecessor
-                    let actual_pred_key = (phi_block_label.clone(), logical_pred_label.clone());
-                    if let Some(actual_pred_label) =
-                        edge_to_logical_pred.iter().find_map(|((ap, tp), lp)| {
-                            if tp == phi_block_label && lp == logical_pred_label {
-                                Some(ap)
-                            } else {
-                                None
-                            }
-                        })
-                    {
-                        eprintln!(
-                            "Phi Prep (Pass 2): For edge ('{}' -> '{}'), found logical '{}'. Adding move '{}' = '{}'",
-                            actual_pred_label,
-                            phi_block_label,
-                            logical_pred_label,
-                            phi_dest_ssa,
-                            pred_val_ssa
-                        );
-                        self.phi_prep_moves
-                            .entry((actual_pred_label.clone(), phi_block_label.clone()))
-                            .or_default()
-                            .push((phi_dest_ssa.clone(), pred_val_ssa.clone()));
-                    } else {
-                        eprintln!(
-                            "Warning: Could not find actual predecessor for logical pred '{}' targeting block '{}' in edge_to_logical_pred map.",
-                            logical_pred_label, phi_block_label
-                        );
-                    }
-                }
-            } else {
-                eprintln!(
-                    "Warning: Could not find definition for Phi instruction dest '{}'",
-                    phi_dest_ssa
-                );
-            }
-        }
-
-        // --- Pass 3 (on processed instrs): Code Generation ---
-        self.current_block = None;
-
-        // .data
-        self.add(".section .data");
-        self.add("fmt: .string \"%ld\\n\"");
-
-        // .bss for spilled temps
-        self.add(".section .bss");
-        for (temp, loc) in locations {
-            if let Location::Spill = loc {
-                self.add(format!("{}: .quad 0", temp));
-            }
-        }
-
-        // .text
-        // TODO: Separate functions properly. For now, all code goes into .text.
-        self.add(".section .text");
-        self.add(".globl main");
-
-        // Emit code
+        // --- Helper to resolve SSA temps to locations ---
         let resolve = |t: &String| -> String {
             match locations
                 .get(t)
-                .unwrap_or_else(|| panic!("Could not find temporary variable {t}"))
+                .unwrap_or_else(|| panic!("Codegen: Could not find location for temporary variable '{}'", t))
             {
                 Location::Register(reg) => reg.clone(),
-                Location::Spill => format!("{}(%rip)", t),
+                Location::Spill => format!("{}(%rip)", t), // Assumes temps are globals in .bss
             }
         };
 
-        dbg!(&processed_instrs); // Debug the processed instructions
+        // --- Emit Static Data ---
+        self.add(".section .data");
+        self.add("fmt: .string \"%ld\\n\""); // Format string for print
 
-        for instr in &processed_instrs {
-            match instr {
-                Instr::Const(name, val) => {
-                    let dst = resolve(name);
-                    self.add(format!("movq ${}, {}", val, dst));
-                }
-                Instr::BinOp(dest, left, op, right) => {
-                    let l = resolve(left);
-                    let r = resolve(right);
-                    let d = resolve(dest);
-
-                    match op {
-                        Op::Div => {
-                            self.add(format!("movq {}, %rax", l));
-                            self.add("cqto");
-                            self.add(format!("idivq {}", r));
-                            self.add(format!("movq %rax, {}", d));
-                        }
-                        Op::Mod => {
-                            self.add(format!("movq {}, %rax", l));
-                            self.add("cqto");
-                            self.add(format!("idivq {}", r));
-                            self.add(format!("movq %rdx, {}", d));
-                        }
-                        _ => {
-                            self.add(format!("movq {}, %rax", l));
-                            let op_instr = match op {
-                                Op::Add => "addq",
-                                Op::Sub => "subq",
-                                Op::Mul => "imulq",
-                                Op::BitOr | Op::Or => "orq",
-                                Op::BitAnd | Op::And => "andq",
-                                Op::Shl => "shlq",
-                                Op::Shr => "shrq",
-                                _ => unreachable!(),
-                            };
-                            self.add(format!("{} {}, %rax", op_instr, r));
-                            self.add(format!("movq %rax, {}", d));
-                        }
-                    }
-                }
-                Instr::Print(name) => {
-                    let src = resolve(name);
-                    self.add(format!("movq {src}, %rsi"));
-                    self.add("leaq fmt(%rip), %rdi");
-                    self.add("xor %rax, %rax");
-                    self.add("call printf");
-                }
-                Instr::Cmp(dest, left, cmp_op, right) => {
-                    let dest = resolve(dest);
-                    let l = resolve(left);
-                    let r = resolve(right);
-                    self.add(format!("cmpq {}, {}", r, l));
-                    self.add(match cmp_op {
-                        CmpOp::Eq => "sete %al",
-                        CmpOp::Neq => "setne %al",
-                        CmpOp::Lt => "setl %al",
-                        CmpOp::Lte => "setle %al",
-                        CmpOp::Gt => "setg %al",
-                        CmpOp::Gte => "setge %al",
-                    });
-                    // movzb can only be moved to a register. Arbitrarily use %rax.
-                    self.add("movzb %al, %rax");
-                    self.add(format!("movq %rax, {dest}"));
-                }
-                Instr::BranchIf(cond, then_label, else_label) => {
-                    let cond_reg = resolve(cond);
-                    self.add(format!("cmpq $0, {}", cond_reg));
-                    self.add(format!("jne {}", then_label)); // Jump if condition is true (non-zero)
-
-                    // Code for the 'else' path (condition is false/zero)
-                    // Emit Phi moves for the edge to the else block *before* jumping/falling through
-                    if let Some(prep_moves) = self
-                        .phi_prep_moves
-                        .get(&(self.current_block.clone().unwrap(), else_label.to_string()))
-                    {
-                        eprintln!("Phi Moves for edge to {}: {:?}", else_label, prep_moves);
-                        for (phi_dest_ssa, pred_val_ssa) in prep_moves.clone() {
-                            let dest_loc = resolve(&phi_dest_ssa);
-                            let src_loc = resolve(&pred_val_ssa);
-                            self.move_memory(&src_loc, &dest_loc);
-                        }
-                    }
-                    self.add(format!("jmp {}", else_label)); // Jump to else block
-
-                    // Code for the 'then' path (condition is true/non-zero)
-                    // Need a label for the jump instruction above to target
-                    // self.add(format!("{}:", then_label)); // The original branch goes here
-                    // Emit Phi moves for the edge to the then block *before* jumping/falling through
-                    // NOTE: This part might be unreachable if the jne always jumps past it.
-                    // The structure assumes the 'then' block follows immediately.
-                    // A robust CFG-aware approach is needed here.
-                    if let Some(prep_moves) = self
-                        .phi_prep_moves
-                        .get(&(self.current_block.clone().unwrap(), then_label.to_string()))
-                    {
-                        eprintln!("Phi Moves for edge to {}: {:?}", then_label, prep_moves);
-                        for (phi_dest_ssa, pred_val_ssa) in prep_moves.clone() {
-                            let dest_loc = resolve(&phi_dest_ssa);
-                            let src_loc = resolve(&pred_val_ssa);
-                            self.move_memory(&src_loc, &dest_loc);
-                        }
-                    }
-                    // Implicit fallthrough to then_label if it's the next instruction
-                    // Or an explicit jump if the structure requires it (we assume fallthrough for now)
-                }
-                Instr::Jump(label) => {
-                    // Emit Phi moves for the edge to the target block *before* jumping
-                    if let Some(prep_moves) = self
-                        .phi_prep_moves
-                        .get(&(self.current_block.clone().unwrap(), label.to_string()))
-                    {
-                        eprintln!("Phi Moves for edge to {}: {:?}", label, prep_moves);
-                        for (phi_dest_ssa, pred_val_ssa) in prep_moves.clone() {
-                            let dest_loc = resolve(&phi_dest_ssa);
-                            let src_loc = resolve(&pred_val_ssa);
-                            self.move_memory(&src_loc, &dest_loc);
-                        }
-                    }
-                    self.add(format!("jmp {}", label));
-                }
-                Instr::Label(label) => {
-                    // We need to distinguish between function labels and basic block labels.
-                    // For now, just emit the label. Function prologues/epilogues are missing.
-                    self.add(format!("{}:", label));
-                    self.current_block = Some(label.clone());
-                }
-                // Phi nodes are handled by inserting moves at the end of predecessor blocks.
-                // No direct code generation needed here for the Phi instruction itself.
-                Instr::Phi(_, _) => {}
-                Instr::Call {
-                    target,
-                    args,
-                    result,
-                } => {
-                    // TODO: Handle > 6 arguments (stack passing)
-                    // TODO: Handle floating point arguments
-                    let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
-
-                    // Ensure caller-saved registers are saved if needed (requires liveness analysis)
-                    // For now, we assume the register allocator handles this or we accept clobbering.
-
-                    // Move arguments into registers
-                    for (idx, arg_ssa) in args.iter().enumerate() {
-                        if idx >= arg_regs.len() {
-                            panic!("More than 6 arguments not yet supported");
-                        }
-                        let arg_loc = resolve(arg_ssa);
-                        let target_reg = arg_regs[idx];
-                        self.move_memory(&arg_loc, target_reg); // Use move_memory to handle reg/mem
-                    }
-
-                    // Call the function
-                    self.add(format!("call {}", target));
-
-                    // Move result from %rax (if any)
-                    if let Some(res_ssa) = result {
-                        let res_loc = resolve(res_ssa);
-                        self.move_memory("%rax", &res_loc); // Use move_memory to handle reg/mem
-                    }
-
-                    // Restore caller-saved registers if they were saved
-                }
-                Instr::Ret { value } => {
-                    if let Some(val_ssa) = value {
-                        let val_loc = resolve(val_ssa);
-                        self.move_memory(&val_loc, "%rax"); // Move return value to %rax
-                    } else {
-                        self.add("xor %rax, %rax");
-                    }
-                    self.add("ret");
-                }
-                Instr::Assign(dest, src) => {
-                    let dest_loc = resolve(dest);
-                    let src_loc = resolve(src);
-                    self.move_memory(&src_loc, &dest_loc);
-                }
-                // No assembly generated for FuncParam itself.
-                // This is handled by the register allocator.
-                Instr::FuncParam { .. } => {}
+        // --- Emit BSS for Spilled Variables ---
+        self.add(".section .bss");
+        // Sort locations to ensure deterministic output
+        let mut sorted_locations: Vec<_> = locations.iter().collect();
+        sorted_locations.sort_by_key(|(name, _)| *name);
+        for (temp, loc) in sorted_locations {
+            if let Location::Spill = loc {
+                self.add(format!("{}: .quad 0", temp)); // Reserve 8 bytes for each spilled temp
             }
         }
+
+        // --- Emit Code Section ---
+        self.add(".section .text");
+        // Assuming 'main' is the entry point for now. Proper function handling needed later.
+        // Find the 'main' block label if it exists, otherwise assume the first block is main.
+        let entry_label = cfg.blocks.keys().next().cloned().unwrap_or_else(|| "main".to_string());
+        if entry_label == "main" {
+             self.add(".globl main");
+        }
+        // Could add .globl for other function entry points if CFG distinguishes them.
+
+
+        // --- Iterate Through CFG Blocks (Sorted for Determinism) ---
+        let sorted_block_labels: Vec<_> = cfg.blocks.keys().cloned().collect();
+        // Consider sorting based on a topological sort or reverse postorder for potentially better code layout later.
+        // For now, alphabetical sort is deterministic.
+
+        for block_label in &sorted_block_labels {
+            let block = cfg.blocks.get(block_label).expect("Block label not found in CFG");
+
+            // Emit the block label
+            self.add(format!("{}:", block_label));
+
+            // --- Process Instructions within the Block ---
+            let num_instrs = block.instrs.len();
+            for (i, instr) in block.instrs.iter().enumerate() {
+                // Skip Phi nodes here; they are handled at the end of predecessors.
+                if matches!(instr, Instr::Phi(_, _)) {
+                    continue;
+                }
+
+                // Check if this is the terminator instruction
+                let is_terminator = i == num_instrs - 1;
+
+                // --- Insert Phi Moves BEFORE Terminator ---
+                if is_terminator {
+                    match instr {
+                        Instr::Jump(target_label) => {
+                            self.emit_phi_moves(block_label, &target_label, cfg, &resolve);
+                        }
+                        Instr::BranchIf(_, then_label, else_label) => {
+                            // Moves for the 'then' edge (taken if condition is true/jne)
+                            // These need to be emitted *before* the conditional jump instruction
+                            // because the jne jumps *over* them if the condition is false.
+                            // This is complex. A common technique is to duplicate moves or use conditional moves.
+                            // Simpler approach: Emit moves *after* the label for the target block,
+                            // but that breaks the "at end of predecessor" rule.
+                            // Let's stick to emitting *before* the terminator for now,
+                            // acknowledging potential control flow issues with BranchIf.
+                            // A better approach involves dedicated edge blocks or careful layout.
+
+                            // Emit moves for the 'else' edge (fallthrough/jmp path)
+                            self.emit_phi_moves(block_label, &else_label, cfg, &resolve);
+                            // Emit moves for the 'then' edge
+                            self.emit_phi_moves(block_label, &then_label, cfg, &resolve);
+
+                        }
+                        Instr::Ret { .. } => {
+                            // No successors, no Phi moves needed.
+                        }
+                        _ => {
+                            // Instruction is not a standard terminator, but it's the last one.
+                            // This might indicate fallthrough, which should ideally be an explicit Jump.
+                            // If fallthrough is intended, find the next block label and emit Phi moves.
+                            // For now, assume explicit terminators are required by the CFG.
+                            eprintln!("Warning: Block '{}' ends with non-terminator instruction: {:?}", block_label, instr);
+                        }
+                    }
+                }
+
+                // --- Generate Assembly for the Current Instruction ---
+                match instr {
+                    Instr::Const(name, val) => {
+                        let dst = resolve(&name);
+                        self.add(format!("movq ${}, {}", val, dst));
+                    }
+                    Instr::BinOp(dest, left, op, right) => {
+                        let l = resolve(&left);
+                        let r = resolve(&right);
+                        let d = resolve(&dest);
+
+                        match op {
+                            Op::Div | Op::Mod => {
+                                // Ensure dividend (left) is in %rax, divisor (right) is not %rax or %rdx
+                                // Ensure %rdx is zeroed before idivq
+                                // Use temporary registers if needed to avoid clobbering inputs during setup
+                                let rax = "%rax";
+                                let rdx = "%rdx";
+
+                                // Simple case: left is already %rax, right is not %rax/%rdx
+                                if l == rax && r != rax && r != rdx {
+                                    self.add("cqto"); // Sign extend %rax into %rdx:%rax
+                                    self.add(format!("idivq {}", r));
+                                }
+                                // Case: right is %rax, left is not %rax/%rdx
+                                else if r == rax && l != rax && l != rdx {
+                                    // Swap using another register, e.g., %r11 (caller-saved, less likely used)
+                                    let temp_reg = "%r11";
+                                    self.add(format!("movq {}, {}", rax, temp_reg)); // Save divisor
+                                    self.add(format!("movq {}, {}", l, rax));    // Move dividend to %rax
+                                    self.add("cqto");
+                                    self.add(format!("idivq {}", temp_reg));     // Divide by saved divisor
+                                }
+                                // General case: Use %r10, %r11 as temps
+                                else {
+                                    let temp_reg_l = "%r10";
+                                    let temp_reg_r = "%r11";
+                                    self.move_memory(&l, temp_reg_l); // Move left to r10
+                                    self.move_memory(&r, temp_reg_r); // Move right to r11
+                                    self.add(format!("movq {}, {}", temp_reg_l, rax)); // Dividend to %rax
+                                    self.add("cqto");
+                                    self.add(format!("idivq {}", temp_reg_r)); // Divide by r11
+                                }
+
+                                // Move result (%rax for Div, %rdx for Mod) to destination
+                                if *op == Op::Div {
+                                    self.move_memory(rax, &d);
+                                } else {
+                                    self.move_memory(rdx, &d);
+                                }
+                            }
+                            _ => {
+                                // Standard binary ops often use a 2-operand form (op src, dest)
+                                // Move left to dest, then perform op with right
+                                let op_instr = match op {
+                                    Op::Add => "addq",
+                                    Op::Sub => "subq",
+                                    Op::Mul => "imulq", // imulq src, dest (dest = dest * src)
+                                    Op::BitOr | Op::Or => "orq",
+                                    Op::BitAnd | Op::And => "andq",
+                                    Op::Shl => "salq", // Use arithmetic shift for signed? Or logical 'shlq'? Assuming shlq.
+                                    Op::Shr => "sarq", // Use arithmetic shift for signed? Or logical 'shrq'? Assuming shrq.
+                                    _ => unreachable!("Op {:?} should be handled by Div/Mod", op),
+                                };
+
+                                // Handle shifts: requires count in %cl or immediate
+                                if *op == Op::Shl || *op == Op::Shr {
+                                     // If right operand is a constant immediate, use that directly
+                                     // Need to check if 'r' resolves to an immediate value - requires more info
+                                     // For now, assume 'r' is a register/memory, move to %cl
+                                     let cl = "%cl";
+                                     self.move_memory(&r, cl); // Move count to %cl
+                                     self.move_memory(&l, &d); // Move value to destination
+                                     self.add(format!("{} {}, {}", op_instr, cl, d)); // Shift dest by %cl
+                                }
+                                // Handle multiplication where src and dest can be different
+                                else if *op == Op::Mul {
+                                     // imul src, dest (dest = dest * src)
+                                     // imul src (rax = rax * src, result in rdx:rax) - less useful here
+                                     // imul src, reg (reg = reg * src)
+                                     // imul imm, src, dest (dest = src * imm)
+                                     self.move_memory(&l, &d); // Move left to destination
+                                     self.add(format!("{} {}, {}", op_instr, r, d)); // d = d * r
+                                }
+                                // Handle Add, Sub, Or, And
+                                else {
+                                     self.move_memory(&l, &d); // Move left to destination
+                                     self.add(format!("{} {}, {}", op_instr, r, d)); // d = d op r
+                                }
+                            }
+                        }
+                    }
+                    Instr::Print(name) => {
+                        let src = resolve(&name);
+                        self.add(format!("movq {}, %rsi", src)); // Value to print in %rsi
+                        self.add("leaq fmt(%rip), %rdi"); // Format string address in %rdi
+                        self.add("xor %rax, %rax"); // No vector args
+                        self.add("call printf");
+                    }
+                    Instr::Cmp(dest, left, cmp_op, right) => {
+                        let dest_loc = resolve(&dest);
+                        let l = resolve(&left);
+                        let r = resolve(&right);
+                        self.add(format!("cmpq {}, {}", r, l)); // Compare r with l, sets flags based on l - r
+                        let set_instr = match cmp_op {
+                            CmpOp::Eq => "sete",   // Set if Equal (ZF=1)
+                            CmpOp::Neq => "setne", // Set if Not Equal (ZF=0)
+                            CmpOp::Lt => "setl",   // Set if Less (SF!=OF)
+                            CmpOp::Lte => "setle", // Set if Less or Equal (ZF=1 or SF!=OF)
+                            CmpOp::Gt => "setg",   // Set if Greater (ZF=0 and SF=OF)
+                            CmpOp::Gte => "setge", // Set if Greater or Equal (SF=OF)
+                        };
+                        // sete/setne/... operate on a byte register (%al, %bl, etc.)
+                        self.add(format!("{} %al", set_instr));
+                        // Zero-extend the byte result (%al) into a quadword register (%rax)
+                        self.add("movzbq %al, %rax");
+                        // Move the quadword result to the destination
+                        self.move_memory("%rax", &dest_loc);
+                    }
+                    Instr::BranchIf(cond, then_label, else_label) => {
+                        // Phi moves should have been emitted before this instruction
+                        let cond_loc = resolve(&cond);
+                        self.add(format!("cmpq $0, {}", cond_loc)); // Test if condition is non-zero
+                        self.add(format!("jne {}", then_label)); // Jump to then_label if non-zero (true)
+                        // If zero (false), execution falls through to the jump to else_label
+                        self.add(format!("jmp {}", else_label));
+                    }
+                    Instr::Jump(label) => {
+                        // Phi moves should have been emitted before this instruction
+                        self.add(format!("jmp {}", label));
+                    }
+                    Instr::Label(_) => {
+                        // Label was already emitted at the start of the block processing.
+                    }
+                    Instr::Phi(_, _) => {
+                        // Phi nodes handled by moves in predecessors. Do nothing here.
+                    }
+                    Instr::Call {
+                        target,
+                        args,
+                        result,
+                    } => {
+                        // TODO: Handle > 6 arguments (stack passing)
+                        // TODO: Handle floating point arguments
+                        // TODO: Handle caller/callee saved registers based on calling convention & liveness
+                        let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
+                        // Move arguments into registers
+                        for (idx, arg_ssa) in args.iter().enumerate() {
+                            if idx >= arg_regs.len() {
+                                panic!("Codegen: More than 6 arguments not yet supported for call to '{}'", target);
+                            }
+                            let arg_loc = resolve(arg_ssa);
+                            let target_reg = arg_regs[idx];
+                            // Avoid clobbering if arg_loc is needed later or is another arg reg
+                            // This requires careful register allocation or temporary moves.
+                            // Simple move for now:
+                            self.move_memory(&arg_loc, target_reg);
+                        }
+
+                        // Call the function
+                        self.add(format!("call {}", target));
+
+                        // Move result from %rax (if any)
+                        if let Some(res_ssa) = result {
+                            let res_loc = resolve(&res_ssa);
+                            // Avoid clobbering %rax if res_loc is %rax
+                            if res_loc != "%rax" {
+                                self.move_memory("%rax", &res_loc);
+                            }
+                        }
+                    }
+                    Instr::Ret { value } => {
+                        if let Some(val_ssa) = value {
+                            let val_loc = resolve(&val_ssa);
+                            // Move return value to %rax if it's not already there
+                            if val_loc != "%rax" {
+                                self.move_memory(&val_loc, "%rax");
+                            }
+                        } else {
+                            // No return value specified, convention is often to return 0
+                            self.add("xor %rax, %rax");
+                        }
+                        // TODO: Add function epilogue (restore stack frame, etc.) if needed
+                        self.add("ret");
+                    }
+                    Instr::Assign(dest, src) => {
+                        // This might be redundant if register allocation handles coalescing.
+                        // If present, it's a simple move.
+                        let dest_loc = resolve(&dest);
+                        let src_loc = resolve(&src);
+                        self.move_memory(&src_loc, &dest_loc);
+                    }
+                    Instr::FuncParam { .. } => {
+                        // No assembly generated for FuncParam itself.
+                        // Handled by register allocator assigning parameter registers/stack slots.
+                    }
+                    // Handle other instructions if any
+                } // End match instr
+            } // End loop instructions in block
+        } // End loop blocks in CFG
 
         self.format_asm(&self.asm)
     }
@@ -327,31 +327,88 @@ impl Codegen {
         lines
             .iter()
             .map(|line| {
-                if line.trim_end().ends_with(':')
-                    || line.starts_with(".section")
-                    || line.starts_with(".globl")
+                let trimmed = line.trim_end();
+                if trimmed.ends_with(':') // Labels
+                    || trimmed.starts_with('.') // Directives
+                    || trimmed.is_empty()
                 {
-                    line.to_string()
+                    line.to_string() // No indentation
                 } else {
-                    format!("  {}", line)
+                    format!("  {}", line) // Indent instructions
                 }
             })
             .collect::<Vec<_>>()
             .join("\n")
     }
 
+    // Helper to emit moves for Phi nodes targeting `target_block_label`
+    // from the `current_block_label`.
+    fn emit_phi_moves(
+        &mut self,
+        current_block_label: &str,
+        target_block_label: &str,
+        cfg: &CFG,
+        resolve: &impl Fn(&String) -> String,
+    ) {
+        if let Some(target_block) = cfg.blocks.get(target_block_label) {
+            for instr in &target_block.instrs {
+                if let Instr::Phi(phi_dest_ssa, edges) = instr {
+                    // Find the value coming from the current block
+                    if let Some((_, pred_val_ssa)) = edges
+                        .iter()
+                        .find(|(pred_label, _)| pred_label == current_block_label)
+                    {
+                        let dest_loc = resolve(&phi_dest_ssa);
+                        let src_loc = resolve(pred_val_ssa);
+
+                        // Check if source and destination are the same (common after reg alloc)
+                        if dest_loc != src_loc {
+                             eprintln!(
+                                 "Phi Move (at end of {} for edge to {}): {} <- {}",
+                                 current_block_label, target_block_label, dest_loc, src_loc
+                             );
+                            self.move_memory(&src_loc, &dest_loc);
+                        }
+                    } else {
+                         // This case should ideally not happen if the CFG and Phi nodes are consistent
+                         eprintln!(
+                             "Warning: Phi node in block '{}' has no edge from predecessor '{}'. Phi: {:?}",
+                             target_block_label, current_block_label, instr
+                         );
+                    }
+                } else {
+                    // Phi nodes only appear at the beginning of a block.
+                    break;
+                }
+            }
+        } else {
+             eprintln!(
+                 "Warning: Target block '{}' for Phi moves not found in CFG.",
+                 target_block_label
+             );
+        }
+    }
+
+
+    // Move data between registers and/or memory, handling memory-to-memory restriction.
     fn move_memory(&mut self, src: &str, dest: &str) {
-        // Check if both source and destination are memory locations
+        // Avoid redundant moves
+        if src == dest {
+            return;
+        }
+
         let is_src_mem = src.contains("(%rip)");
         let is_dest_mem = dest.contains("(%rip)");
 
         if is_src_mem && is_dest_mem {
-            // Can't move directly between memory locations in x86-64, so we need to evict a register
-            // Let's pick %rax arbitrarily, and use it as an intermediate
+            // Use %rax as temporary for memory-to-memory moves.
+            // WARNING: This clobbers %rax. Assumes %rax is not live with a value
+            // that needs preserving across this move. A robust implementation
+            // would check liveness or use a dedicated scratch register.
             self.add(format!("movq {}, %rax", src));
             self.add(format!("movq %rax, {}", dest));
         } else {
-            // Direct move is allowed if either src or dest are a register
+            // Direct move allowed (reg-reg, reg-mem, mem-reg)
             self.add(format!("movq {}, {}", src, dest));
         }
     }
@@ -360,260 +417,5 @@ impl Codegen {
         self.asm.push(line.as_ref().to_string());
     }
 
-    // --- Function to build CFG, map edges, and insert explicit jumps ---
-    fn preprocess_ir_and_build_maps(
-        &self,
-        original_instrs: &[Instr],
-    ) -> (
-        Vec<Instr>,
-        BTreeMap<String, BlockInfo>,
-        HashMap<(String, String), String>,
-    ) {
-        // --- Pass 1 & 2: Build initial block info and successors (unchanged) ---
-        let mut blocks = BTreeMap::<String, BlockInfo>::new();
-        let mut label_to_idx = HashMap::<String, usize>::new();
-        let mut current_label = None;
-
-        for (idx, instr) in original_instrs.iter().enumerate() {
-            if let Instr::Label(label) = instr {
-                if let Some(prev_label) = current_label {
-                    blocks.entry(prev_label).and_modify(|b| {
-                        b.end_idx = idx - 1;
-                    });
-                }
-                let label_str = label.clone();
-                label_to_idx.insert(label_str.clone(), idx);
-                blocks.insert(
-                    label_str.clone(),
-                    BlockInfo {
-                        label: label_str.clone(),
-                        start_idx: idx,
-                        end_idx: original_instrs.len() - 1, // Tentative
-                        successors: Vec::new(),
-                    },
-                );
-                current_label = Some(label_str);
-            }
-        }
-        if let Some(last_label) = current_label {
-            blocks.entry(last_label).and_modify(|b| {
-                b.end_idx = original_instrs.len() - 1;
-            });
-        } else if !original_instrs.is_empty() {
-            let default_label = "main".to_string(); // Consistent default
-            label_to_idx.insert(default_label.clone(), 0);
-            blocks.insert(
-                default_label.clone(),
-                BlockInfo {
-                    label: default_label,
-                    start_idx: 0,
-                    end_idx: original_instrs.len() - 1,
-                    successors: Vec::new(),
-                },
-            );
-        }
-
-        // Collect block start indices and labels for fallthrough check
-        let block_starts: HashMap<usize, String> = blocks
-            .iter()
-            .map(|(lbl, info)| (info.start_idx, lbl.clone()))
-            .collect();
-
-        let mut fallthrough_jumps_to_insert: HashMap<String, String> = HashMap::new(); // block_label -> target_label
-
-        for (label, info) in blocks.iter_mut() {
-            if info.end_idx >= original_instrs.len() {
-                continue;
-            } // Skip if end_idx is out of bounds
-            if let Some(last_instr) = original_instrs.get(info.end_idx) {
-                match last_instr {
-                    Instr::Jump(target_label) => {
-                        info.successors.push(target_label.clone());
-                    }
-                    Instr::BranchIf(_, then_label, else_label) => {
-                        info.successors.push(then_label.clone());
-                        info.successors.push(else_label.clone());
-                    }
-                    Instr::Ret { .. } => {
-                        // Return terminates the block, no successors
-                    }
-                    _ => {
-                        // Fallthrough ONLY if not Jump/Branch/Ret/Phi
-                        if let Some(next_instr) = original_instrs.get(info.end_idx + 1) {
-                            if let Instr::Label(next_label) = next_instr {
-                                if block_starts.get(&(info.end_idx + 1)) == Some(next_label) {
-                                    info.successors.push(next_label.clone());
-                                    // Mark that an explicit jump needs to be inserted
-                                    fallthrough_jumps_to_insert
-                                        .insert(label.clone(), next_label.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // --- Create Modified Instruction List (No Jump Insertion Needed Anymore) ---
-        // The IR should now contain explicit terminators (Jump/Ret) where needed.
-        // The fallthrough_jumps_to_insert map is now only used for successor calculation, not modification.
-        let modified_instrs = original_instrs.to_vec();
-
-        // --- Recalculate block info based on modified_instrs (now same as original) ---
-        let mut final_blocks = BTreeMap::<String, BlockInfo>::new();
-        let mut final_label_to_idx = HashMap::<String, usize>::new();
-        let mut current_label = None;
-
-        for (idx, instr) in modified_instrs.iter().enumerate() {
-            if let Instr::Label(label) = instr {
-                if let Some(prev_label) = current_label {
-                    final_blocks.entry(prev_label).and_modify(|b| {
-                        b.end_idx = idx - 1;
-                    });
-                }
-                let label_str = label.clone();
-                final_label_to_idx.insert(label_str.clone(), idx);
-                final_blocks.insert(
-                    label_str.clone(),
-                    BlockInfo {
-                        label: label_str.clone(),
-                        start_idx: idx,
-                        end_idx: modified_instrs.len() - 1, // Tentative
-                        successors: Vec::new(),
-                    },
-                );
-                current_label = Some(label_str);
-            }
-        }
-        if let Some(last_label) = current_label {
-            final_blocks.entry(last_label).and_modify(|b| {
-                b.end_idx = modified_instrs.len() - 1;
-            });
-        } else if !modified_instrs.is_empty() {
-            // Handle case where modified list starts without a label (should use default 'main')
-            let default_label = "main".to_string();
-            if !final_blocks.contains_key(&default_label) {
-                final_label_to_idx.insert(default_label.clone(), 0);
-                final_blocks.insert(
-                    default_label.clone(),
-                    BlockInfo {
-                        label: default_label,
-                        start_idx: 0,
-                        end_idx: modified_instrs.len() - 1,
-                        successors: Vec::new(),
-                    },
-                );
-            }
-        }
-
-        // Recalculate successors for final_blocks
-        for (_, info) in final_blocks.iter_mut() {
-            if info.end_idx >= modified_instrs.len() {
-                continue;
-            }
-            // Clear old successors if any were calculated before
-            info.successors.clear();
-            if let Some(last_instr) = modified_instrs.get(info.end_idx) {
-                match last_instr {
-                    Instr::Jump(target_label) => {
-                        info.successors.push(target_label.clone());
-                    }
-                    Instr::BranchIf(_, then_label, else_label) => {
-                        info.successors.push(then_label.clone());
-                        info.successors.push(else_label.clone());
-                    }
-                    _ => { /* No fallthrough possible anymore */ }
-                }
-            }
-        }
-
-        // --- Pass 3: Build the edge_to_logical_pred map (using original_instrs for Phi defs, final_blocks for CFG) ---
-        let mut edge_to_logical_pred = HashMap::<(String, String), String>::new();
-        for phi_block_label in final_blocks.keys() {
-            // Find all actual predecessors for this phi_block using final_blocks CFG
-            let actual_predecessors_set: HashSet<String> = final_blocks
-                .iter()
-                .filter(|(_, info)| info.successors.contains(phi_block_label))
-                .map(|(label, _)| label.clone())
-                .collect();
-
-            // Find Phi definitions in the original instruction list corresponding to this block
-            // Need original block info for this lookup step
-            if let Some(original_block_info) = blocks.get(phi_block_label) {
-                for idx in original_block_info.start_idx..=original_block_info.end_idx {
-                    if idx >= original_instrs.len() {
-                        continue;
-                    }
-                    if let Some(Instr::Phi(_, original_preds_ref)) = original_instrs.get(idx) {
-                        let original_preds = original_preds_ref.clone();
-
-                        eprintln!(
-                            "Mapping Edges for Phis in {}: Logical Preds: {:?}, Actual Preds: {:?}",
-                            phi_block_label,
-                            original_preds.iter().map(|(lp, _)| lp).collect::<Vec<_>>(),
-                            actual_predecessors_set
-                        );
-                        let mut used_actual_preds = HashSet::new();
-                        let mut remaining_logical: Vec<(String, String)> = Vec::new();
-                        // Pass 1: Direct Matches
-                        for (logical_pred, _) in &original_preds {
-                            if actual_predecessors_set.contains(logical_pred) {
-                                if !used_actual_preds.contains(logical_pred) {
-                                    eprintln!(
-                                        "  Mapping edge ('{}', '{}') -> logical '{}' (direct match)",
-                                        logical_pred, phi_block_label, logical_pred
-                                    );
-                                    edge_to_logical_pred.insert(
-                                        (logical_pred.clone(), phi_block_label.clone()),
-                                        logical_pred.clone(),
-                                    );
-                                    used_actual_preds.insert(logical_pred.clone());
-                                } else {
-                                    remaining_logical.push((logical_pred.clone(), "".to_string()));
-                                }
-                            } else {
-                                remaining_logical.push((logical_pred.clone(), "".to_string()));
-                            }
-                        }
-                        // Pass 2: Fallback for Remaining
-                        let mut remaining_actual: Vec<String> = actual_predecessors_set
-                            .iter()
-                            .filter(|ap| !used_actual_preds.contains(*ap))
-                            .cloned()
-                            .collect();
-                        if !remaining_logical.is_empty() {
-                            if remaining_logical.len() == remaining_actual.len() {
-                                for (logical_pred, _) in remaining_logical {
-                                    if let Some(actual_pred) = remaining_actual.pop() {
-                                        eprintln!(
-                                            "  Warning: Mapping edge ('{}', '{}') -> logical '{}' (fallback heuristic)",
-                                            actual_pred, phi_block_label, logical_pred
-                                        );
-                                        edge_to_logical_pred.insert(
-                                            (actual_pred, phi_block_label.clone()),
-                                            logical_pred.clone(),
-                                        );
-                                    } else {
-                                        eprintln!(
-                                            "  Error: Fallback edge mapping failed - ran out of actual preds for logical '{}'.",
-                                            logical_pred
-                                        );
-                                    }
-                                }
-                            } else {
-                                eprintln!(
-                                    "  Error: Could not map all edges. Count mismatch ({} logical vs {} actual remaining).",
-                                    remaining_logical.len(),
-                                    remaining_actual.len()
-                                );
-                            }
-                        }
-                        // End mapping logic
-                    }
-                }
-            }
-        }
-
-        (modified_instrs, final_blocks, edge_to_logical_pred)
-    }
+    // Removed preprocess_ir_and_build_maps function
 }

@@ -4,7 +4,7 @@ assertion_line: 82
 expression: test_output
 input_file: tests/programs/function.ovm
 ---
-status: 3
+status: 0
 stdout:
   - "10"
 stderr: []

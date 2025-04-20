@@ -1,7 +1,7 @@
 pub mod linear_scan;
 
-use super::Instr;
 use std::collections::HashMap;
+use crate::optimizer::CFG;
 
 pub const AVAILABLE_REGS: [&str; 6] = ["%rbx", "%rbp", "%r12", "%r13", "%r14", "%r15"];
 
@@ -12,5 +12,5 @@ pub enum Location {
 }
 
 pub trait RegisterAllocator {
-    fn allocate(&self, instrs: &[Instr]) -> (Vec<Instr>, HashMap<String, Location>);
+    fn allocate(&self, instrs: &CFG) -> (CFG, HashMap<String, Location>);
 }

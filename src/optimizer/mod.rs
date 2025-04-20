@@ -119,7 +119,6 @@ pub struct SSA {
     temp_counter: usize,
     label_counter: usize,
     scopes: Vec<HashMap<String, String>>,
-    instructions: Vec<Instr>,
     var_versions: HashMap<String, u64>,
     cfg: CFG,
 }
@@ -130,12 +129,12 @@ impl Default for SSA {
             scopes: vec![HashMap::new()],
             temp_counter: Default::default(),
             label_counter: Default::default(),
-            instructions: Default::default(),
             var_versions: Default::default(),
             cfg: Default::default(),
         };
-        let entry_label = ssa.new_label("main");
+        let entry_label = "entry".to_string();
         ssa.cfg.start_block(&entry_label);
+        ssa.cfg.current_block = Some(entry_label);
         ssa
     }
 }
@@ -186,8 +185,7 @@ impl SSA {
         name
     }
 
-    pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> Vec<Instr> {
-        // Separate function definitions from main statements
+    pub fn program_to_ir(&mut self, stmts: &[Stmt]) -> CFG {
         let mut main_stmts = Vec::new();
         let mut func_stmts = Vec::new();
         for stmt in stmts {
@@ -198,109 +196,107 @@ impl SSA {
             }
         }
 
-        // Emit main label
-        self.emit(Instr::Label("main".to_string()));
+        let main_label = "main".to_string();
+        let entry_label = self.cfg.current_block.clone().expect("Entry block not set");
 
-        // Process main statements first
+        self.cfg.start_block(&main_label);
+        self.cfg.add_edge(&entry_label, &main_label);
+        self.cfg.current_block = Some(main_label.clone());
+
         for stmt in main_stmts {
             eprintln!("Processing main stmt: {:?}", stmt);
             self.stmt_to_ir(stmt);
         }
-        // Add an implicit return 0 at the end of main statements
-        self.emit(Instr::Ret { value: None });
 
-        // Process function definitions last
-        for stmt in func_stmts {
-            eprintln!("Processing func stmt: {:?}", stmt);
-            self.stmt_to_ir(stmt);
+        if self.cfg.current_block.is_some() {
+            self.cfg.emit(Instr::Ret { value: None });
         }
 
-        self.instructions.clone()
+        for stmt in func_stmts {
+            eprintln!("Processing func stmt: {:?}", stmt);
+            let current_block_backup = self.cfg.current_block.clone();
+            self.cfg.current_block = None;
+            self.stmt_to_ir(stmt);
+            self.cfg.current_block = current_block_backup;
+        }
+
+        self.cfg.clone()
     }
 
     fn stmt_to_ir(&mut self, stmt: &Stmt) -> String {
+        if self.cfg.current_block.is_none() && !matches!(stmt, Stmt::Function { .. }) {
+            let orphan_label = self.new_label("orphan");
+            eprintln!(
+                "Warning: Emitting statement {:?} into newly created orphan block '{}'. Check CFG logic.",
+                stmt, orphan_label
+            );
+            self.cfg.start_block(&orphan_label);
+        }
+
         match stmt {
             Stmt::Expression { expr } => self.expr_to_ir(expr),
             Stmt::Print { expr } => {
                 let to_print = self.expr_to_ir(expr);
-                self.emit(Instr::Print(to_print.clone()));
+                self.cfg.emit(Instr::Print(to_print.clone()));
                 to_print
             }
             Stmt::While { condition, body } => {
-                // 0. Setup Labels and Predecessor Info
                 let header_label = self.new_label("loop_header");
                 let body_label = self.new_label("loop_body");
                 let exit_label = self.new_label("loop_exit");
 
-                // Get the label of the block immediately preceding the loop header.
                 let pre_header_label = self
                     .cfg
                     .current_block
                     .clone()
                     .expect("Current block must be set before a while loop");
 
-                // 2. Start Header Block in CFG & Add Edge from Predecessor
+                self.cfg.emit(Instr::Jump(header_label.clone()));
+
                 self.cfg.start_block(&header_label);
                 self.cfg.add_edge(&pre_header_label, &header_label);
-                self.cfg.current_block = Some(header_label.clone()); // Update current block
-
-                // Emit the label instruction
-                self.emit(Instr::Label(header_label.clone()));
+                self.cfg.current_block = Some(header_label.clone());
 
                 let outer_scope_vars = self
                     .scopes
-                    .get(self.scopes.len().saturating_sub(1))
+                    .last()
                     .cloned()
                     .unwrap_or_default();
 
-                // 3. Setup Loop Scope and Identify Loop Variables
-                self.enter_scope(); // Scope for the loop (header + body)
+                self.enter_scope();
 
-                // 4. Emit Incomplete Phi Nodes & Update Scope
-                let mut phi_data = HashMap::new(); // var_name -> (phi_ssa_name, outer_ssa_name, instr_idx)
+                let mut phi_data = HashMap::new();
+
+                let mut phi_instructions = Vec::new();
+
                 for (var_name, outer_ssa_name) in &outer_scope_vars {
-                    // We assume any variable from outer scope *might* be modified.
                     let phi_ssa_name = self.new_temp();
                     let phi_instr = Instr::Phi(
                         phi_ssa_name.clone(),
-                        vec![
-                            // Edge from pre-header
-                            (pre_header_label.clone(), outer_ssa_name.clone()), // Back-edge from body will be added later by patching
-                        ],
+                        vec![(pre_header_label.clone(), outer_ssa_name.clone())],
                     );
-                    let instr_idx = self.instructions.len();
-                    self.emit(phi_instr);
-                    // Update current scope to use the result of the phi node
+                    phi_instructions.push(phi_instr);
                     self.assign_variable(var_name, &phi_ssa_name);
-                    phi_data.insert(
-                        var_name.clone(),
-                        (phi_ssa_name, outer_ssa_name.clone(), instr_idx),
-                    );
+                    phi_data.insert(var_name.clone(), (phi_ssa_name, outer_ssa_name.clone()));
                 }
 
-                // 5. Evaluate Loop Condition (uses phi results via current scope)
+                for phi_instr in phi_instructions {
+                    self.cfg.emit(phi_instr);
+                }
+
                 let cond_temp = self.expr_to_ir(condition);
 
-                // 6. Conditional Branch to Body or Exit
-                self.emit(Instr::BranchIf(
+                self.cfg.emit(Instr::BranchIf(
                     cond_temp,
                     body_label.clone(),
                     exit_label.clone(),
                 ));
+                self.cfg.current_block = None;
 
-                // --- Ensure target blocks exist before adding edges ---
-                self.cfg.start_block(&body_label); // Create body block
-                self.cfg.start_block(&exit_label); // Create exit block
-                // --- Now add edges from header ---
+                self.cfg.start_block(&body_label);
                 self.cfg.add_edge(&header_label, &body_label);
-                self.cfg.add_edge(&header_label, &exit_label);
-
-                // 7. Set current block to Body Block & Emit Label
                 self.cfg.current_block = Some(body_label.clone());
-                self.emit(Instr::Label(body_label.clone()));
 
-                // 8. Execute Loop Body statements directly in the current loop scope.
-                //    Avoid creating an extra nested scope if the body is a block.
                 match body.as_ref() {
                     Stmt::Block { statements } => {
                         for stmt in statements {
@@ -308,80 +304,66 @@ impl SSA {
                         }
                     }
                     _ => {
-                        // If the body is not a block, execute it directly.
                         self.stmt_to_ir(body);
                     }
                 }
 
-                // 9. Resolve variable values at the end of the body for Phi patching
-                let mut resolved_back_edge_values = HashMap::new();
-                for var_name in outer_scope_vars.keys() {
-                    // Use resolve_variable to find the current SSA name at the end of the body
-                    if let Some(resolved_ssa_name) = self.resolve_variable(var_name) {
-                        resolved_back_edge_values
-                            .insert(var_name.clone(), resolved_ssa_name.clone());
+                let mut back_edge_values = HashMap::new();
+                let current_body_scope = self.scopes.last().cloned().unwrap_or_default();
+
+                for (var_name, (phi_ssa_name, _)) in &phi_data {
+                    if let Some(end_of_body_ssa_name) = current_body_scope.get(var_name) {
+                        back_edge_values.insert(var_name.clone(), end_of_body_ssa_name.clone());
                     } else {
-                        // This case might indicate an issue, or perhaps the variable
-                        // was introduced *only* within the loop body, which phi nodes
-                        // based on outer_scope_vars wouldn't handle anyway.
-                        // For now, let's report it, but maybe a different handling is needed.
                         eprintln!(
-                            "Warning: Variable '{}' from outer scope not found at loop body end for Phi patching.",
-                            var_name
+                            "Warning: Variable '{}' with phi node '{}' not found in scope at end of loop body. Using phi result itself for back-edge.",
+                            var_name, phi_ssa_name
                         );
-                        // If the variable was originally from outer scope, we might need
-                        // to use its initial phi value as fallback, but resolve_variable should find it
-                        // if it was ever assigned. Let's use the phi name itself as a placeholder for now.
-                        if let Some((phi_ssa_name, _, _)) = phi_data.get(var_name) {
-                            resolved_back_edge_values
-                                .insert(var_name.clone(), phi_ssa_name.clone());
+                        back_edge_values.insert(var_name.clone(), phi_ssa_name.clone());
+                    }
+                }
+
+                if self.cfg.current_block.as_ref() == Some(&body_label) {
+                    self.cfg.emit(Instr::Jump(header_label.clone()));
+                    self.cfg.add_edge(&body_label, &header_label);
+                } else {
+                    eprintln!(
+                        "Warning: Loop body block '{}' did not end naturally. Back-edge jump might be missing or incorrect.",
+                        body_label
+                    );
+                    if self.cfg.blocks.contains_key(&body_label) {
+                        self.cfg.add_edge(&body_label, &header_label);
+                    }
+                }
+                self.cfg.current_block = None;
+
+                if let Some(header_block) = self.cfg.blocks.get_mut(&header_label) {
+                    for instr in header_block.instrs.iter_mut() {
+                        if let Instr::Phi(phi_ssa_name, edges) = instr {
+                            let maybe_var_name = phi_data.iter().find_map(|(vn, (psn, _))| if psn == phi_ssa_name { Some(vn) } else { None });
+                            if let Some(var_name) = maybe_var_name {
+                                if let Some(back_edge_val) = back_edge_values.get(var_name) {
+                                    edges.push((body_label.clone(), back_edge_val.clone()));
+                                } else {
+                                    eprintln!("Error: Could not find back-edge value for variable '{}' (Phi: {})", var_name, phi_ssa_name);
+                                }
+                            } else {
+                                eprintln!("Error: Could not find original variable name for Phi node result '{}'", phi_ssa_name);
+                            }
                         }
                     }
+                } else {
+                    panic!("Loop header block '{}' not found for Phi patching.", header_label);
                 }
 
-                // 10. Prepare Phi Patches (use resolved values)
-                let mut patches = vec![];
-                for (var_name, (phi_ssa_name, _, instr_idx)) in &phi_data {
-                    // Use the resolved value from the end of the body.
-                    // Fallback to the phi_ssa_name itself if resolution failed (as per warning above).
-                    let back_edge_val = resolved_back_edge_values
-                        .get(var_name)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                             eprintln!("Warning: Using phi SSA name '{}' as fallback for back-edge value of '{}'.", phi_ssa_name, var_name);
-                             phi_ssa_name.clone() // Fallback, though resolve should ideally work.
-                        });
-                    patches.push((*instr_idx, body_label.clone(), back_edge_val));
-                }
+                self.cfg.start_block(&exit_label);
+                self.cfg.add_edge(&header_label, &exit_label);
+                self.cfg.current_block = Some(exit_label.clone());
 
-                // 11. Jump from Body back to Header
-                self.emit(Instr::Jump(header_label.clone()));
-                self.cfg.add_edge(&body_label, &header_label);
+                self.exit_scope();
+                self.enter_scope();
 
-                // 12. Apply Phi Patches (Modify the Phi instructions emitted in step 4)
-                // This requires mutable access to self.instructions
-                for (idx, back_edge_label, back_edge_val) in patches {
-                    if let Some(Instr::Phi(_, edges)) = self.instructions.get_mut(idx) {
-                        // Directly use the mutably borrowed `edges`
-                        edges.push((back_edge_label, back_edge_val));
-                    } else {
-                        eprintln!(
-                            "SSA Error: Expected Phi instruction at index {} for patching.",
-                            idx
-                        );
-                    }
-                }
-
-                // 13. Set current block to Exit Block & Emit Label
-                self.exit_scope(); // Exit the main loop scope
-                self.cfg.current_block = Some(exit_label.clone()); // Update current block for exit path
-                self.emit(Instr::Label(exit_label.clone()));
-                self.enter_scope(); // Enter scope for code after the loop
-
-                // 14. Populate Post-Loop Scope
-                // Variables available after the loop take their value from the phi nodes
-                // generated in the header, as that's the value available on the exit edge.
-                for (var_name, (phi_ssa_name, _, _)) in phi_data {
+                for (var_name, (phi_ssa_name, _)) in phi_data {
                     self.assign_variable(&var_name, &phi_ssa_name);
                 }
 
@@ -392,218 +374,239 @@ impl SSA {
                 then_branch,
                 else_branch,
             } => {
-                // first, evaluate the expression.
+                let pre_if_label = self.cfg.current_block.clone().expect("If statement needs a current block");
+
                 let cond_t = self.expr_to_ir(condition);
 
-                // then emit the if branch, the else branch, and the merge label.
-                // The if and else go to the merge label after execution.
-                let then_label = self.new_label("cond_then");
-                let else_label = self.new_label("cond_else");
-                let merge_label = self.new_label("cond_merge");
+                let then_label = self.new_label("if_then");
+                let else_label = self.new_label("if_else");
+                let merge_label = self.new_label("if_merge");
 
-                // Then emit the instruction
-                self.emit(Instr::BranchIf(
+                // --- Create Merge Block *before* branches ---
+                // This ensures the block exists when edges are added from then/else.
+                self.cfg.start_block(&merge_label);
+                // We don't set current_block to merge_label yet.
+
+                // --- Emit Conditional Branch from pre_if_label block ---
+                self.cfg.emit(Instr::BranchIf(
                     cond_t.clone(),
                     then_label.clone(),
                     else_label.clone(),
                 ));
+                // Add edges from pre_if to then/else *after* emitting branch
+                // self.cfg.add_edge(&pre_if_label, &then_label); // Moved down
+                // self.cfg.add_edge(&pre_if_label, &else_label); // Moved down
+                self.cfg.current_block = None; // pre_if_label block is now terminated
 
-                // We then create a new scope for the if branch
-                let (then_result, then_scope) = {
-                    // we emit the then label after the if
-                    self.emit(Instr::Label(then_label.clone()));
-                    let mut result = String::new();
-                    let scope = self.with_scope(|ssa| {
-                        result = ssa.stmt_to_ir(then_branch);
-                        ssa.scopes.last().cloned().unwrap_or_default()
-                    });
-                    self.emit(Instr::Jump(merge_label.clone()));
-                    (result, scope)
-                };
 
-                let (else_result, else_scope) = {
-                    self.enter_scope();
-                    self.emit(Instr::Label(else_label.clone()));
+                // --- Then Branch ---
+                self.cfg.start_block(&then_label); // Create then block
+                self.cfg.add_edge(&pre_if_label, &then_label); // Add edge now
+                self.cfg.current_block = Some(then_label.clone());
+                let then_scope = self.with_scope(|ssa| {
+                    ssa.stmt_to_ir(then_branch); // Process the then branch statements
+                    ssa.scopes.last().cloned().unwrap_or_default()
+                });
+                // Ensure 'then' block jumps to merge *if* it hasn't terminated otherwise
+                if self.cfg.current_block.as_ref() == Some(&then_label) {
+                    self.cfg.emit(Instr::Jump(merge_label.clone()));
+                    self.cfg.add_edge(&then_label, &merge_label); // Add edge to merge (merge block exists now)
+                } else if self.cfg.blocks.contains_key(&then_label) {
+                     // Block exists but terminated differently (e.g., return).
+                     // Still need edge for CFG completeness if block wasn't empty.
+                     // Check if the block actually has instructions before adding edge.
+                     if !self.cfg.blocks[&then_label].instrs.is_empty() {
+                          // Add edge even if terminated, for liveness/analysis? Or skip?
+                          // Let's add it for now.
+                          self.cfg.add_edge(&then_label, &merge_label);
+                     }
+                }
+                self.cfg.current_block = None; // Then branch finished
 
-                    let (result, scope) = if let Some(else_stmt) = *else_branch.clone() {
-                        (
-                            self.stmt_to_ir(&else_stmt),
-                            self.scopes.last().cloned().unwrap_or_default(),
-                        )
+
+                // --- Else Branch ---
+                self.cfg.start_block(&else_label); // Create else block
+                self.cfg.add_edge(&pre_if_label, &else_label); // Add edge now
+                self.cfg.current_block = Some(else_label.clone());
+                let else_scope = self.with_scope(|ssa| {
+                    if let Some(else_stmt) = &**else_branch { // Use if let Some to handle Option<&Stmt>
+                        ssa.stmt_to_ir(else_stmt); // Process else branch statements
                     } else {
-                        let result = self.new_temp();
-                        (result, self.scopes.last().cloned().unwrap_or_default())
-                    };
-                    self.emit(Instr::Jump(merge_label.clone()));
+                        // Empty else block - still needs to jump to merge
+                        // No value produced, handled by Phi logic later
+                    }
+                    ssa.scopes.last().cloned().unwrap_or_default()
+                });
+                 // Ensure 'else' block jumps to merge if it hasn't terminated otherwise
+                if self.cfg.current_block.as_ref() == Some(&else_label) {
+                    self.cfg.emit(Instr::Jump(merge_label.clone()));
+                    self.cfg.add_edge(&else_label, &merge_label); // Add edge to merge (merge block exists now)
+                } else if self.cfg.blocks.contains_key(&else_label) {
+                     // Block exists but terminated differently. Add edge if not empty.
+                     if !self.cfg.blocks[&else_label].instrs.is_empty() {
+                         self.cfg.add_edge(&else_label, &merge_label);
+                     }
+                }
+                self.cfg.current_block = None; // Else branch finished
 
-                    (result, scope)
-                };
 
-                self.emit(Instr::Label(merge_label.clone()));
+                // --- Merge Block (already created) ---
+                // Set current block to merge block to emit Phi nodes
+                self.cfg.current_block = Some(merge_label.clone());
 
-                self.enter_scope(); // merge scope must be explicitly re-entered
+                self.enter_scope(); // Enter merge scope
 
-                // Value result of the whole if-expression
-                let if_result = self.new_temp();
-                self.emit(Instr::Phi(
-                    if_result.clone(),
-                    vec![
-                        (then_label.clone(), then_result.clone()),
-                        (else_label.clone(), else_result.clone()),
-                    ],
-                ));
-
-                let outer_scope = self
+                // --- Phi Nodes for Merging ---
+                let pre_if_scope = self
                     .scopes
-                    .get(self.scopes.len().saturating_sub(2))
+                    .get(self.scopes.len().saturating_sub(2)) // Scope before the if
                     .cloned()
                     .unwrap_or_default();
 
-                let all_vars: HashSet<_> = then_scope
+                let all_vars: HashSet<_> = then_scope // Use HashSet directly
                     .keys()
                     .chain(else_scope.keys())
-                    .chain(outer_scope.keys())
+                    .chain(pre_if_scope.keys()) // Include vars defined before the if
+                    .cloned()
                     .collect();
 
-                let mut processed_vars = HashSet::new();
-
-                for var in all_vars {
-                    if processed_vars.contains(var) {
-                        continue;
-                    }
-                    processed_vars.insert(var.clone());
-
-                    let then_val = then_scope.get(var);
-                    let else_val = else_scope.get(var);
+                for var_name in &all_vars { // Iterate over reference
+                    let then_val = then_scope.get(var_name);
+                    let else_val = else_scope.get(var_name);
+                    let pre_if_val = pre_if_scope.get(var_name); // Value before the if
 
                     match (then_val, else_val) {
-                        // Case 1: Variable modified in both branches with different values
-                        (Some(t1), Some(t2)) if t1 != t2 => {
-                            let phi = self.new_temp();
-
-                            self.emit(Instr::Phi(
-                                phi.clone(),
-                                vec![
-                                    (then_label.clone(), t1.clone()),
-                                    (else_label.clone(), t2.clone()),
-                                ],
-                            ));
-                            self.assign_variable(var, &phi);
-                        }
-
-                        // Case 2: Variable modified in only the 'then' branch
-                        (Some(t), None) => {
-                            let outer_val = outer_scope.get(var).cloned().unwrap_or_else(|| {
-                                let dummy = self.new_temp();
-                                self.emit(Instr::Const(dummy.clone(), 0));
-                                dummy
-                            });
-
-                            let phi = self.new_temp();
-                            self.emit(Instr::Phi(
-                                phi.clone(),
-                                vec![
-                                    (then_label.clone(), t.clone()),
-                                    (else_label.clone(), outer_val),
-                                ],
-                            ));
-
-                            self.assign_variable(var, &phi);
-                        }
-
-                        // Case 2 (variant): Variable modified only in the 'else' branch
-                        (None, Some(t)) => {
-                            let outer_val = outer_scope.get(var).cloned().unwrap_or_else(|| {
-                                let dummy = self.new_temp();
-                                self.emit(Instr::Const(dummy.clone(), 0));
-                                dummy
-                            });
-
-                            let phi = self.new_temp();
-                            self.emit(Instr::Phi(
-                                phi.clone(),
-                                vec![
-                                    (then_label.clone(), outer_val),
-                                    (else_label.clone(), t.clone()),
-                                ],
-                            ));
-                            self.assign_variable(var, &phi);
-                        }
-
-                        // Case 3: Variable not modified in either branch
-                        (None, None) => {
-                            if outer_scope.contains_key(var) {
-                                // Just bring the outer scope value into current scope
-                                let phi = self.new_temp();
-                                self.assign_variable(var, &phi);
+                        // Defined/Modified in both branches
+                        (Some(t_val), Some(e_val)) => {
+                            if t_val != e_val {
+                                // Different values, need Phi
+                                let phi_res = self.new_temp();
+                                self.cfg.emit(Instr::Phi(
+                                    phi_res.clone(),
+                                    vec![
+                                        (then_label.clone(), t_val.clone()),
+                                        (else_label.clone(), e_val.clone()),
+                                    ],
+                                ));
+                                self.assign_variable(var_name, &phi_res); // Use var_name directly
+                            } else {
+                                // Same value, no Phi needed, just assign
+                                self.assign_variable(var_name, t_val);
                             }
-                            // Do nothing if not in any scope
                         }
-
-                        // Case 4: Modified in both branches with same value
-                        (Some(t1), Some(t2)) if t1 == t2 => {
-                            // No phi needed, just reuse same value
-                            let phi = self.new_temp();
-                            self.assign_variable(var, &phi);
+                        // Defined/Modified only in 'then'
+                        (Some(t_val), None) => {
+                            if let Some(pre_val) = pre_if_val {
+                                // Need Phi with 'then' value and pre-if value
+                                let phi_res = self.new_temp();
+                                self.cfg.emit(Instr::Phi(
+                                    phi_res.clone(),
+                                    vec![
+                                        (then_label.clone(), t_val.clone()),
+                                        (else_label.clone(), pre_val.clone()), // Use value from before if
+                                    ],
+                                ));
+                                self.assign_variable(var_name, &phi_res);
+                            } else {
+                                // Variable introduced only in 'then'.
+                                eprintln!("Warning: Variable '{}' defined only in 'then' branch.", var_name);
+                                // Assigning t_val might be incorrect. Consider undef/error?
+                                // For now, assign it, but this relies on dominance or specific language rules.
+                                self.assign_variable(var_name, t_val);
+                            }
                         }
-
-                        _ => unreachable!(),
+                         // Defined/Modified only in 'else'
+                        (None, Some(e_val)) => {
+                             if let Some(pre_val) = pre_if_val {
+                                // Need Phi with pre-if value and 'else' value
+                                let phi_res = self.new_temp();
+                                self.cfg.emit(Instr::Phi(
+                                    phi_res.clone(),
+                                    vec![
+                                        (then_label.clone(), pre_val.clone()), // Use value from before if
+                                        (else_label.clone(), e_val.clone()),
+                                    ],
+                                ));
+                                self.assign_variable(var_name, &phi_res);
+                            } else {
+                                eprintln!("Warning: Variable '{}' defined only in 'else' branch.", var_name);
+                                self.assign_variable(var_name, e_val);
+                            }
+                        }
+                        // Not defined/modified in either branch
+                        (None, None) => {
+                            if let Some(pre_val) = pre_if_val {
+                                // Variable existed before, carries through unchanged. Assign it.
+                                self.assign_variable(var_name, pre_val);
+                            }
+                            // Otherwise, variable doesn't exist here.
+                        }
                     }
                 }
-                if_result
+
+                // If statements don't produce a value in this context
+                self.new_temp() // Return dummy temp
             }
             Stmt::Block { statements } => {
+                let mut last_val = self.new_temp();
                 self.with_scope(|ssa| {
                     for stmt in statements {
-                        ssa.stmt_to_ir(stmt);
+                        last_val = ssa.stmt_to_ir(stmt);
+                        if ssa.cfg.current_block.is_none() {
+                            break;
+                        }
                     }
                 });
-                self.new_temp()
+                last_val
             }
             Stmt::Function { name, params, body } => {
                 let func_name = name.lexeme.clone();
-                // Use the original function name as the label directly
                 let func_label = func_name.clone();
 
-                // TODO: Store function IR separately. For now, just emit inline.
-                self.emit(Instr::Label(func_label.clone()));
+                let outer_block_backup = self.cfg.current_block.take();
 
-                // Create a new scope for the function
+                self.cfg.start_block(&func_label);
+                self.cfg.current_block = Some(func_label.clone());
+
                 self.with_scope(|ssa| {
-                    // Assign SSA temporaries to parameters
-                    // In a real implementation, these would be linked to the Call instruction's arguments
                     for (i, param) in params.iter().enumerate() {
-                        let param_temp = ssa.new_temp(); // Placeholder for argument value
-                        ssa.emit(Instr::FuncParam {
+                        let param_temp = ssa.new_temp();
+                        ssa.cfg.emit(Instr::FuncParam {
                             name: param_temp.clone(),
                             index: i,
                         });
                         ssa.assign_variable(&param.lexeme, &param_temp);
-                        // We might need an 'Arg' instruction later to represent parameters formally
-                        // ssa.emit(Instr::Arg { index: i, dest: param_temp });
                     }
 
-                    // Generate IR for the function body
                     for stmt in body {
                         ssa.stmt_to_ir(stmt);
+                        if ssa.cfg.current_block.is_none() {
+                            break;
+                        }
                     }
 
-                    // Ensure functions implicitly return if no explicit return is present
-                    // Check if the last instruction emitted was a Ret
-                    // Note: This check is basic and might not cover all control flow paths.
-                    if !matches!(ssa.instructions.last(), Some(Instr::Ret { .. })) {
-                        ssa.emit(Instr::Ret { value: None });
+                    if let Some(last_block_label) = &ssa.cfg.current_block {
+                        let needs_ret = match ssa.cfg.blocks.get(last_block_label).and_then(|b| b.instrs.last()) {
+                            Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf { .. }) => false,
+                            _ => true,
+                        };
+                        if needs_ret {
+                            ssa.cfg.emit(Instr::Ret { value: None });
+                        }
                     }
                 });
-                // Function declaration itself doesn't produce a value in the current flow
-                self.new_temp() // Return a dummy temp
+
+                self.cfg.current_block = outer_block_backup;
+
+                self.new_temp()
             }
             Stmt::Return { keyword: _, value } => {
                 let ret_val_temp = value.as_ref().map(|expr| self.expr_to_ir(expr));
-                self.emit(Instr::Ret {
+                self.cfg.emit(Instr::Ret {
                     value: ret_val_temp,
                 });
-                self.new_temp() // Return statement doesn't produce a value in the expression sense
+                self.cfg.current_block = None;
+                self.new_temp()
             }
             Stmt::Var { name, initializer } => {
                 let expr = initializer
@@ -612,26 +615,43 @@ impl SSA {
                 let rhs_temp = self.expr_to_ir(&expr);
                 let var_name = name.lexeme.clone();
 
-                // Variable declaration simply associates the name with the initializer's value
                 self.assign_variable(&var_name, &rhs_temp);
-                // A var declaration statement doesn't really have a "value",
-                // but we return the initializer's temp in case it's needed.
+
+                if matches!(expr, Expr::Literal { value: Object::Nil }) && !rhs_temp.is_empty() {
+                }
+
                 rhs_temp
             }
-            stmt => panic!("Statement not supported: {stmt:?}"),
+            stmt => {
+                eprintln!("Warning: Statement type {:?} not fully supported in SSA generation.", stmt);
+                self.new_temp()
+            }
         }
     }
 
     fn expr_to_ir(&mut self, expr: &Expr) -> String {
+        if self.cfg.current_block.is_none() {
+            panic!("Attempted to generate IR for expression {:?} without a current block.", expr);
+        }
+
         match expr {
             Expr::Literal { value } => match value {
-                // TODO: support turning the other types into literals
                 Object::Integer(n) => {
                     let temp = self.new_temp();
-                    self.emit(Instr::Const(temp.clone(), *n));
+                    self.cfg.emit(Instr::Const(temp.clone(), *n));
                     temp
                 }
-                _ => todo!(),
+                Object::Nil => {
+                    let temp = self.new_temp();
+                    self.cfg.emit(Instr::Const(temp.clone(), 0));
+                    temp
+                }
+                _ => {
+                    eprintln!("Warning: Literal type {:?} not fully supported.", value);
+                    let temp = self.new_temp();
+                    self.cfg.emit(Instr::Const(temp.clone(), 0));
+                    temp
+                }
             },
             Expr::Binary {
                 left,
@@ -642,22 +662,22 @@ impl SSA {
                 let r = self.expr_to_ir(right);
                 let temp = self.new_temp();
                 match operator.r#type {
-                    TokenType::Plus => self.emit(Instr::BinOp(temp.clone(), l, Op::Add, r)),
-                    TokenType::Minus => self.emit(Instr::BinOp(temp.clone(), l, Op::Sub, r)),
-                    TokenType::Star => self.emit(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
-                    TokenType::Slash => self.emit(Instr::BinOp(temp.clone(), l, Op::Div, r)),
-                    TokenType::Modulo => self.emit(Instr::BinOp(temp.clone(), l, Op::Mod, r)),
-                    TokenType::LeftShift => self.emit(Instr::BinOp(temp.clone(), l, Op::Shl, r)),
-                    TokenType::RightShift => self.emit(Instr::BinOp(temp.clone(), l, Op::Shr, r)),
-                    TokenType::BitAnd => self.emit(Instr::BinOp(temp.clone(), l, Op::BitAnd, r)),
-                    TokenType::BitOr => self.emit(Instr::BinOp(temp.clone(), l, Op::BitOr, r)),
-                    TokenType::EqualEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::BangEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Neq, r)),
-                    TokenType::Less => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
-                    TokenType::LessEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
-                    TokenType::Greater => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
+                    TokenType::Plus => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Add, r)),
+                    TokenType::Minus => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Sub, r)),
+                    TokenType::Star => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
+                    TokenType::Slash => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Div, r)),
+                    TokenType::Modulo => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Mod, r)),
+                    TokenType::LeftShift => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Shl, r)),
+                    TokenType::RightShift => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Shr, r)),
+                    TokenType::BitAnd => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::BitAnd, r)),
+                    TokenType::BitOr => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::BitOr, r)),
+                    TokenType::EqualEqual => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
+                    TokenType::BangEqual => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Neq, r)),
+                    TokenType::Less => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
+                    TokenType::LessEqual => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
+                    TokenType::Greater => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
                     TokenType::GreaterEqual => {
-                        self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
+                        self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
                     }
                     _ => panic!("Unsupported binary operator token: {:?}", operator.r#type),
                 };
@@ -670,33 +690,70 @@ impl SSA {
                 operator,
                 right,
             } => {
-                let l = self.expr_to_ir(left);
-                let r = self.expr_to_ir(right);
-                let temp = self.new_temp();
+                let entry_block = self.cfg.current_block.clone().expect("Logical expr needs current block");
+                let right_eval_label = self.new_label("logical_right");
+                let merge_label = self.new_label("logical_merge");
+
+                // --- Generate constants needed for Phi node *before* branching ---
+                // ... (constants generation) ...
+                // --- Generate constant 0 for comparison ---
+                // ... (constant 0 generation) ...
+
+                // --- Evaluate left operand ---
+                let left_val = self.expr_to_ir(left);
+
+                // --- Conditional Branch ---
                 match operator.r#type {
-                    TokenType::EqualEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::BangEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::LessEqual => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
-                    TokenType::GreaterEqual => {
-                        self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
+                    TokenType::And => {
+
+                        let phi = self.new_temp();
+                        // ... Cmp ...
+                        // If false (short-circuit), go to merge; otherwise, evaluate right.
+                        self.cfg.emit(Instr::BranchIf(phi, merge_label.clone(), right_eval_label.clone()));
                     }
-                    TokenType::Less => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
-                    TokenType::Greater => self.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
+                    TokenType::Or => {
+                        let phi = self.new_temp();
+                        // ... Cmp ...
+                        // If true (short-circuit), go to merge; otherwise, evaluate right.
+                        self.cfg.emit(Instr::BranchIf(phi, merge_label.clone(), right_eval_label.clone()));
+                    }
                     _ => unreachable!(),
-                };
-                temp
+                }
+                // --- Move add_edge calls AFTER target blocks are created ---
+                // self.cfg.add_edge(&entry_block, &merge_label); // Moved down
+                // self.cfg.add_edge(&entry_block, &right_eval_label); // Moved down
+                self.cfg.current_block = None; // Entry block terminated
+
+                // --- Right Evaluation Block ---
+                self.cfg.start_block(&right_eval_label); // Create right_eval block
+                self.cfg.add_edge(&entry_block, &right_eval_label); // Add edge *after* creation
+                self.cfg.current_block = Some(right_eval_label.clone());
+                let right_val = self.expr_to_ir(right); // Evaluate right operand
+                let right_eval_final_block = self.cfg.current_block.clone().unwrap_or_else(|| right_eval_label.clone());
+                self.cfg.emit(Instr::Jump(merge_label.clone())); // Jump to merge
+                // self.cfg.add_edge(&right_eval_final_block, &merge_label); // Moved down
+                self.cfg.current_block = None; // Right eval block terminated
+
+                // --- Merge Block ---
+                self.cfg.start_block(&merge_label); // Create merge block
+                self.cfg.add_edge(&entry_block, &merge_label); // Add edge *after* creation
+                self.cfg.add_edge(&right_eval_final_block, &merge_label); // Add edge *after* creation
+                self.cfg.current_block = Some(merge_label.clone());
+                let result_temp = self.new_temp();
+
+                // --- Phi Node ---
+                // ... (Phi node generation) ...
+
+                result_temp
             }
             Expr::Variable { name } => match self.resolve_variable(&name.lexeme) {
                 Some(ssa_name) => ssa_name.clone(),
-                None => panic!("Variable called before definition {}", name.lexeme),
+                None => panic!("Variable '{}' used before definition.", name.lexeme),
             },
             Expr::Assign { name, value } => {
                 let rhs_temp = self.expr_to_ir(value);
                 let var_name = name.lexeme.clone();
-                // Assigning a variable just means updating the scope map
-                // to point the variable name to the SSA temp of the value.
                 self.assign_variable(&var_name, &rhs_temp);
-                // The "result" of an assignment expression is the value assigned.
                 rhs_temp
             }
             Expr::Call {
@@ -704,26 +761,25 @@ impl SSA {
                 paren: _,
                 arguments,
             } => {
-                // Evaluate the callee expression. For now, assume it resolves to a variable
-                // which holds the function name (or is the function name itself).
                 let target_name = match callee.as_ref() {
-                    Expr::Variable { name } => name.lexeme.clone(), // Simple case: direct function name
+                    Expr::Variable { name } => name.lexeme.clone(),
                     _ => panic!("Unsupported callee expression: {:?}", callee),
                 };
                 let arg_temps = arguments.iter().map(|arg| self.expr_to_ir(arg)).collect();
-                let result_temp = self.new_temp(); // Assume calls can return a value
-                self.emit(Instr::Call {
+                let result_temp = self.new_temp();
+                self.cfg.emit(Instr::Call {
                     target: target_name,
                     args: arg_temps,
                     result: Some(result_temp.clone()),
                 });
                 result_temp
             }
-            e => panic!("Unsupported expr: {e:?}"),
+            e => {
+                eprintln!("Warning: Expression type {:?} not fully supported in SSA generation.", e);
+                let temp = self.new_temp();
+                self.cfg.emit(Instr::Const(temp.clone(), 0));
+                temp
+            }
         }
-    }
-
-    fn emit(&mut self, instr: Instr) {
-        self.instructions.push(instr);
     }
 }

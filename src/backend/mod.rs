@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use crate::optimizer::{Instr, registers::Location};
+use crate::optimizer::{CFG, registers::Location};
 
 pub mod x86_64;
 
 pub trait Backend {
     fn generate_assembly(
         &mut self,
-        program: &[Instr],
+        program: &CFG,
         reg_map: &HashMap<String, Location>,
     ) -> String;
 }
