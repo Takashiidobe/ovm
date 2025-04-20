@@ -41,7 +41,7 @@ fn main() {
     let mut ssa = SSA::default();
     let ssa_instrs = ssa.program_to_ir(&program);
     let optimizer = Optimizer;
-    let optimized_instrs = optimizer.run_all(ssa_instrs);
+    let optimized_instrs = optimizer.run_none(ssa_instrs);
 
     let allocator = LinearScan;
     let (allocated_instrs, reg_map) = allocator.allocate(&optimized_instrs);
