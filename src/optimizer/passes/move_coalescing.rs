@@ -45,7 +45,12 @@ impl Pass for MoveCoalescing {
                             if temp_reg == src_reg =>
                         {
                             // Coalesce by making the Phi write directly to the final destination
-                            optimized_instrs.push(Instr::Phi(dest_reg.clone(), pred_vals.clone()));
+                            let reordered_pred_vals: Vec<_> = pred_vals
+                                .iter()
+                                .cloned()
+                                .filter(|(pred, _)| block.preds.contains(pred))
+                                .collect();
+                            optimized_instrs.push(Instr::Phi(dest_reg.clone(), reordered_pred_vals));
                             i += 2;
                         }
                         _ => {
@@ -91,7 +96,7 @@ mod tests {
             ], vec![], vec![]),
         ]);
 
-        assert_eq!(pass.optimize(cfg), expected);
+        assert_eq!(pass.optimize(cfg), expected, "Test failed for coalesce_const_assign");
     }
 
     #[test]
@@ -136,7 +141,7 @@ mod tests {
             ], vec!["then", "else"], vec![]),
         ]);
 
-        assert_eq!(pass.optimize(cfg), expected);
+        assert_eq!(pass.optimize(cfg), expected, "Test failed for coalesce_phi_assign");
     }
 
     // ... add more tests for cross-block patterns ...
