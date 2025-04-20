@@ -10,7 +10,7 @@ pub mod move_coalescing;
 pub mod pass;
 pub mod strength_reduction;
 
-use crate::optimizer::Instr;
+use crate::optimizer::CFG;
 
 pub use algebraic_simplification::AlgebraicSimplification;
 pub use branch_elimination::BranchElimination;
@@ -43,7 +43,7 @@ pub struct Optimizer;
 
 impl Optimizer {
     /// Run all available optimization passes in order, iterating core passes until fixed point
-    pub fn run_all(&self, instrs: Vec<Instr>) -> Vec<Instr> {
+    pub fn run_all(&self, instrs: CFG) -> CFG {
         let cf = ConstantFolding;
         let be = BranchElimination;
         let dce = DeadCodeElimination;
@@ -130,7 +130,7 @@ impl Optimizer {
         result
     }
 
-    pub fn run_none(&self, instrs: Vec<Instr>) -> Vec<Instr> {
+    pub fn run_none(&self, instrs: CFG) -> CFG {
         instrs
     }
 }

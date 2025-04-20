@@ -1,9 +1,7 @@
-use crate::optimizer::Instr;
+use crate::optimizer::CFG;
 
-/// Trait for compiler optimization passes
 pub trait Pass {
-    /// Apply the optimization pass to the given instructions
-    fn optimize(&self, instrs: Vec<Instr>) -> Vec<Instr>;
+    fn optimize(&self, instrs: CFG) -> CFG;
 
     fn name(&self) -> &'static str;
 }
