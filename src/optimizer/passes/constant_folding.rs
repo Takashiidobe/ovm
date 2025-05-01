@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::optimizer::{CmpOp, Instr, Op, CFG}; // Added CFG, BasicBlock
+use crate::optimizer::{CFG, CmpOp, Instr, Op}; // Added CFG, BasicBlock
 
 use super::pass::Pass;
 
@@ -10,12 +10,15 @@ use super::pass::Pass;
 pub struct ConstantFolding;
 
 impl Pass for ConstantFolding {
-    fn optimize(&self, mut cfg: CFG) -> CFG { // Changed signature to use CFG
-        for bb in cfg.blocks.values_mut() { // Iterate through mutable basic blocks
+    fn optimize(&self, mut cfg: CFG) -> CFG {
+        // Changed signature to use CFG
+        for bb in cfg.blocks.values_mut() {
+            // Iterate through mutable basic blocks
             let mut constants: HashMap<String, i64> = HashMap::new();
             let mut new_instrs = Vec::new();
 
-            for instr in &bb.instrs { // Iterate over instructions in the block
+            for instr in &bb.instrs {
+                // Iterate over instructions in the block
                 match instr {
                     Instr::Const(name, val) => {
                         constants.insert(name.clone(), *val);
@@ -31,14 +34,26 @@ impl Pass for ConstantFolding {
                                     Op::Add => lv.wrapping_add(rv), // Use wrapping ops for safety
                                     Op::Sub => lv.wrapping_sub(rv),
                                     Op::Mul => lv.wrapping_mul(rv),
-                                    Op::Div => if rv != 0 { lv / rv } else { 0 }, // Avoid panic
+                                    Op::Div => {
+                                        if rv != 0 {
+                                            lv / rv
+                                        } else {
+                                            0
+                                        }
+                                    } // Avoid panic
                                     Op::BitAnd => lv & rv,
                                     Op::BitOr => lv | rv,
                                     Op::And => (lv != 0 && rv != 0) as i64, // Use != 0 for boolean logic
                                     Op::Or => (lv != 0 || rv != 0) as i64,
                                     Op::Shl => lv.checked_shl(rv as u32).unwrap_or(0), // Handle potential overflow
                                     Op::Shr => lv.checked_shr(rv as u32).unwrap_or(0),
-                                    Op::Mod => if rv != 0 { lv % rv } else { 0 }, // Avoid panic
+                                    Op::Mod => {
+                                        if rv != 0 {
+                                            lv % rv
+                                        } else {
+                                            0
+                                        }
+                                    } // Avoid panic
                                 };
                                 constants.insert(dest.clone(), result);
                                 new_instrs.push(Instr::Const(dest.clone(), result));
@@ -108,9 +123,9 @@ impl Pass for ConstantFolding {
                         }
                     }
                     // Instructions that define a variable but aren't foldable yet
-                    Instr::FuncParam { name, .. } | Instr::Call { target: name, ..} => {
-                         constants.remove(name); // Invalidate the destination variable
-                         new_instrs.push(instr.clone());
+                    Instr::FuncParam { name, .. } | Instr::Call { target: name, .. } => {
+                        constants.remove(name); // Invalidate the destination variable
+                        new_instrs.push(instr.clone());
                     }
                     // Instructions that don't define a variable or are terminals
                     _ => {
@@ -139,12 +154,17 @@ mod tests {
     #[test]
     fn test_constant_folding_cfg() {
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t0", 2),
-                cnst("t1", 3),
-                binop("t2", "t0", Op::Add, "t1"),
-                print("t2"),
-            ], vec![], vec![]) // No predecessors or successors for a single block test
+            (
+                "entry",
+                vec![
+                    cnst("t0", 2),
+                    cnst("t1", 3),
+                    binop("t2", "t0", Op::Add, "t1"),
+                    print("t2"),
+                ],
+                vec![],
+                vec![],
+            ), // No predecessors or successors for a single block test
         ]);
 
         let pass = ConstantFolding;
@@ -161,17 +181,22 @@ mod tests {
         assert_eq!(optimized_block.instrs, expected_instrs);
     }
 
-     #[test]
+    #[test]
     fn test_constant_folding_phi_simple() {
         // Test case where a Phi node can be folded because both inputs
         // are the same constant defined within the *same* block.
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c1", 10),
-                cnst("c2", 10),
-                phi("phi_res", vec![("pred1", "c1"), ("pred2", "c2")]),
-                print("phi_res"),
-            ], vec!["pred1", "pred2"], vec![]) // Define predecessors for the block
+            (
+                "entry",
+                vec![
+                    cnst("c1", 10),
+                    cnst("c2", 10),
+                    phi("phi_res", vec![("pred1", "c1"), ("pred2", "c2")]),
+                    print("phi_res"),
+                ],
+                vec!["pred1", "pred2"],
+                vec![],
+            ), // Define predecessors for the block
         ]);
 
         // Note: We need dummy predecessor blocks in the CFG for Phi nodes to be meaningful,
@@ -197,16 +222,18 @@ mod tests {
     #[test]
     fn test_constant_folding_invalidate() {
         // Test case where a non-constant operation invalidates a variable
-         let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 5),
-                func_param("t1", 0), // t1 is not constant
+                func_param("t1", 0),              // t1 is not constant
                 binop("t2", "t0", Op::Add, "t1"), // This cannot be folded
                 binop("t3", "t2", Op::Mul, "t0"), // t2 is not constant, so this cannot be folded either
                 print("t3"),
-            ], vec![], vec![])
-        ]);
-
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let pass = ConstantFolding;
         let optimized_cfg = pass.optimize(cfg);
@@ -220,7 +247,6 @@ mod tests {
             binop("t3", "t2", Op::Mul, "t0"),
             print("t3"),
         ];
-
 
         let optimized_block = optimized_cfg.blocks.get("entry").unwrap();
         assert_eq!(optimized_block.instrs, expected_instrs);

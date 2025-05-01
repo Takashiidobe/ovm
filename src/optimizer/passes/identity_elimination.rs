@@ -1,5 +1,5 @@
-use crate::optimizer::{CFG, BasicBlock, Instr}; // Import CFG and BasicBlock
 use crate::optimizer::passes::pass::Pass;
+use crate::optimizer::{BasicBlock, CFG, Instr}; // Import CFG and BasicBlock
 use indexmap::IndexMap; // Assuming CFG uses IndexMap
 
 /// Identity Function Elimination Pass
@@ -14,7 +14,8 @@ impl Pass for IdentityElimination {
 
         for (label, block) in cfg.blocks {
             // Filter instructions within the current block
-            let optimized_instrs = block.instrs
+            let optimized_instrs = block
+                .instrs
                 .into_iter()
                 .filter(|instr| {
                     // Keep instruction if it's NOT an Assign(x, x) identity
@@ -49,137 +50,235 @@ impl Pass for IdentityElimination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::optimizer::passes::test_helpers::*;
     use crate::optimizer::{CFG, Instr, Op};
     use indexmap::IndexMap;
-    use crate::optimizer::passes::test_helpers::*;
 
     #[test]
     fn test_removes_identity_assign_cfg() {
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t0", 5),
-                assign("t1", "t0"), // Keep: t1 = t0
-                assign("t1", "t1"), // Remove: t1 = t1
-                print("t1"),
-                jump("exit"),
-            ], vec![], vec!["exit"]),
-            ("exit", vec![Instr::Ret{value: None}], vec!["entry"], vec![]),
+            (
+                "entry",
+                vec![
+                    cnst("t0", 5),
+                    assign("t1", "t0"), // Keep: t1 = t0
+                    assign("t1", "t1"), // Remove: t1 = t1
+                    print("t1"),
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
+            (
+                "exit",
+                vec![Instr::Ret { value: None }],
+                vec!["entry"],
+                vec![],
+            ),
         ]);
 
         let pass = IdentityElimination;
         let optimized_cfg = pass.optimize(cfg);
 
         let expected_cfg = create_test_cfg(vec![
-             ("entry", vec![
-                cnst("t0", 5),
-                assign("t1", "t0"),
-                // assign("t1", "t1") removed
-                print("t1"),
-                jump("exit"),
-            ], vec![], vec!["exit"]),
-             ("exit", vec![Instr::Ret{value: None}], vec!["entry"], vec![]),
+            (
+                "entry",
+                vec![
+                    cnst("t0", 5),
+                    assign("t1", "t0"),
+                    // assign("t1", "t1") removed
+                    print("t1"),
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
+            (
+                "exit",
+                vec![Instr::Ret { value: None }],
+                vec!["entry"],
+                vec![],
+            ),
         ]);
 
         assert_eq!(optimized_cfg.blocks.len(), expected_cfg.blocks.len());
         for (label, block) in &optimized_cfg.blocks {
-             assert_eq!(block.instrs, expected_cfg.blocks[label].instrs);
-             assert_eq!(block.preds, expected_cfg.blocks[label].preds);
-             assert_eq!(block.succs, expected_cfg.blocks[label].succs);
+            assert_eq!(block.instrs, expected_cfg.blocks[label].instrs);
+            assert_eq!(block.preds, expected_cfg.blocks[label].preds);
+            assert_eq!(block.succs, expected_cfg.blocks[label].succs);
         }
     }
 
     #[test]
     fn test_no_identity_assign_cfg() {
-         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t0", 10),
-                assign("t1", "t0"),
-                binop("t2", "t1", Op::Add, "t0"),
-                print("t2"),
-                jump("exit"),
-            ], vec![], vec!["exit"]),
-            ("exit", vec![Instr::Ret{value: None}], vec!["entry"], vec![]),
+        let cfg = create_test_cfg(vec![
+            (
+                "entry",
+                vec![
+                    cnst("t0", 10),
+                    assign("t1", "t0"),
+                    binop("t2", "t1", Op::Add, "t0"),
+                    print("t2"),
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
+            (
+                "exit",
+                vec![Instr::Ret { value: None }],
+                vec!["entry"],
+                vec![],
+            ),
         ]);
         let original_cfg = cfg.clone(); // Clone before optimize consumes it
         let pass = IdentityElimination;
         let optimized_cfg = pass.optimize(cfg);
 
         assert_eq!(optimized_cfg.blocks.len(), original_cfg.blocks.len());
-         for (label, block) in &optimized_cfg.blocks {
-             assert_eq!(block.instrs, original_cfg.blocks[label].instrs);
-             assert_eq!(block.preds, original_cfg.blocks[label].preds);
-             assert_eq!(block.succs, original_cfg.blocks[label].succs);
+        for (label, block) in &optimized_cfg.blocks {
+            assert_eq!(block.instrs, original_cfg.blocks[label].instrs);
+            assert_eq!(block.preds, original_cfg.blocks[label].preds);
+            assert_eq!(block.succs, original_cfg.blocks[label].succs);
         }
     }
 
     #[test]
     fn test_multiple_identity_assigns_cfg() {
-         let cfg = create_test_cfg(vec![
-            ("start", vec![
-                assign("a", "a"), // Remove
-                cnst("b", 1),
-                assign("c", "b"),
-                assign("c", "c"), // Remove
-                assign("b", "b"), // Remove
-                print("c"),
-                jump("end"),
-            ], vec![], vec!["end"]),
-            ("end", vec![Instr::Ret{value: None}], vec!["start"], vec![]),
+        let cfg = create_test_cfg(vec![
+            (
+                "start",
+                vec![
+                    assign("a", "a"), // Remove
+                    cnst("b", 1),
+                    assign("c", "b"),
+                    assign("c", "c"), // Remove
+                    assign("b", "b"), // Remove
+                    print("c"),
+                    jump("end"),
+                ],
+                vec![],
+                vec!["end"],
+            ),
+            (
+                "end",
+                vec![Instr::Ret { value: None }],
+                vec!["start"],
+                vec![],
+            ),
         ]);
         let pass = IdentityElimination;
         let optimized_cfg = pass.optimize(cfg);
 
         let expected_cfg = create_test_cfg(vec![
-             ("start", vec![
-                // assign("a", "a") removed
-                cnst("b", 1),
-                assign("c", "b"),
-                // assign("c", "c") removed
-                // assign("b", "b") removed
-                print("c"),
-                jump("end"),
-            ], vec![], vec!["end"]),
-             ("end", vec![Instr::Ret{value: None}], vec!["start"], vec![]),
+            (
+                "start",
+                vec![
+                    // assign("a", "a") removed
+                    cnst("b", 1),
+                    assign("c", "b"),
+                    // assign("c", "c") removed
+                    // assign("b", "b") removed
+                    print("c"),
+                    jump("end"),
+                ],
+                vec![],
+                vec!["end"],
+            ),
+            (
+                "end",
+                vec![Instr::Ret { value: None }],
+                vec!["start"],
+                vec![],
+            ),
         ]);
 
         assert_eq!(optimized_cfg.blocks.len(), expected_cfg.blocks.len());
-         for (label, block) in &optimized_cfg.blocks {
-             assert_eq!(block.instrs, expected_cfg.blocks[label].instrs);
-             assert_eq!(block.preds, expected_cfg.blocks[label].preds);
-             assert_eq!(block.succs, expected_cfg.blocks[label].succs);
+        for (label, block) in &optimized_cfg.blocks {
+            assert_eq!(block.instrs, expected_cfg.blocks[label].instrs);
+            assert_eq!(block.preds, expected_cfg.blocks[label].preds);
+            assert_eq!(block.succs, expected_cfg.blocks[label].succs);
         }
     }
 
     #[test]
     fn test_empty_cfg() {
-        let cfg = CFG { blocks: IndexMap::new(), current_block: None };
+        let cfg = CFG {
+            blocks: IndexMap::new(),
+            current_block: None,
+        };
         let pass = IdentityElimination;
         let optimized_cfg = pass.optimize(cfg);
-        let expected_cfg = CFG { blocks: IndexMap::new(), current_block: None };
+        let expected_cfg = CFG {
+            blocks: IndexMap::new(),
+            current_block: None,
+        };
         assert_eq!(optimized_cfg.blocks.len(), expected_cfg.blocks.len());
     }
 
-     #[test]
+    #[test]
     fn test_multiple_blocks_cfg() {
-         let cfg = create_test_cfg(vec![
-            ("entry", vec![cnst("x", 0), assign("x", "x"), jump("loop")], vec![], vec!["loop"]),
-            ("loop", vec![assign("y", "x"), assign("y", "y"), print("y"), jump("exit")], vec!["entry"], vec!["exit"]),
-            ("exit", vec![Instr::Ret{value: None}], vec!["loop"], vec![]),
+        let cfg = create_test_cfg(vec![
+            (
+                "entry",
+                vec![cnst("x", 0), assign("x", "x"), jump("loop")],
+                vec![],
+                vec!["loop"],
+            ),
+            (
+                "loop",
+                vec![assign("y", "x"), assign("y", "y"), print("y"), jump("exit")],
+                vec!["entry"],
+                vec!["exit"],
+            ),
+            (
+                "exit",
+                vec![Instr::Ret { value: None }],
+                vec!["loop"],
+                vec![],
+            ),
         ]);
         let pass = IdentityElimination;
         let optimized_cfg = pass.optimize(cfg);
 
         let expected_cfg = create_test_cfg(vec![
-            ("entry", vec![cnst("x", 0), jump("loop")], vec![], vec!["loop"]), // assign("x", "x") removed
-            ("loop", vec![assign("y", "x"), print("y"), jump("exit")], vec!["entry"], vec!["exit"]), // assign("y", "y") removed
-            ("exit", vec![Instr::Ret{value: None}], vec!["loop"], vec![]),
+            (
+                "entry",
+                vec![cnst("x", 0), jump("loop")],
+                vec![],
+                vec!["loop"],
+            ), // assign("x", "x") removed
+            (
+                "loop",
+                vec![assign("y", "x"), print("y"), jump("exit")],
+                vec!["entry"],
+                vec!["exit"],
+            ), // assign("y", "y") removed
+            (
+                "exit",
+                vec![Instr::Ret { value: None }],
+                vec!["loop"],
+                vec![],
+            ),
         ]);
 
         assert_eq!(optimized_cfg.blocks.len(), expected_cfg.blocks.len());
-         for (label, block) in &optimized_cfg.blocks {
-             assert_eq!(block.instrs, expected_cfg.blocks[label].instrs, "Block '{}' instructions mismatch", label);
-             assert_eq!(block.preds, expected_cfg.blocks[label].preds, "Block '{}' predecessors mismatch", label);
-             assert_eq!(block.succs, expected_cfg.blocks[label].succs, "Block '{}' successors mismatch", label);
+        for (label, block) in &optimized_cfg.blocks {
+            assert_eq!(
+                block.instrs, expected_cfg.blocks[label].instrs,
+                "Block '{}' instructions mismatch",
+                label
+            );
+            assert_eq!(
+                block.preds, expected_cfg.blocks[label].preds,
+                "Block '{}' predecessors mismatch",
+                label
+            );
+            assert_eq!(
+                block.succs, expected_cfg.blocks[label].succs,
+                "Block '{}' successors mismatch",
+                label
+            );
         }
     }
 }

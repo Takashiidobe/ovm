@@ -195,11 +195,11 @@ impl SSA {
         let mut last_natural_flow_block = main_label.clone();
 
         // Process the program statements
-        for stmt in program{
+        for stmt in program {
             // Before processing a statement that might change control flow (like If),
             // record the current block label.
             if let Some(current) = &self.cfg.current_block {
-                 last_natural_flow_block = current.clone();
+                last_natural_flow_block = current.clone();
             }
             self.stmt_to_ir(stmt); // This might change self.cfg.current_block
         }
@@ -209,12 +209,22 @@ impl SSA {
         // If the last statement was a simple expression or assignment, current_block is where it was emitted.
         // If the last statement was an explicit Return, current_block might be None.
         // Use the block that was active *before* the last statement if current_block is None now.
-        let final_block_label = self.cfg.current_block.clone().unwrap_or(last_natural_flow_block);
-
+        let final_block_label = self
+            .cfg
+            .current_block
+            .clone()
+            .unwrap_or(last_natural_flow_block);
 
         // Check if this final block needs a terminator
-        let needs_terminator = match self.cfg.blocks.get(&final_block_label).and_then(|b| b.instrs.last()) {
-            Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => false,
+        let needs_terminator = match self
+            .cfg
+            .blocks
+            .get(&final_block_label)
+            .and_then(|b| b.instrs.last())
+        {
+            Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => {
+                false
+            }
             _ => true, // Needs a terminator
         };
 
@@ -305,7 +315,6 @@ impl SSA {
                 self.cfg.add_edge(&header_label, &exit_label);
                 self.cfg.current_block = None; // Header block terminated
 
-
                 // --- Loop Body ---
                 // Block already created, just set current_block
                 self.cfg.current_block = Some(body_label.clone());
@@ -314,34 +323,43 @@ impl SSA {
                     Stmt::Block { statements } => {
                         for stmt in statements {
                             self.stmt_to_ir(stmt);
-                            if self.cfg.current_block.is_none() { break; }
+                            if self.cfg.current_block.is_none() {
+                                break;
+                            }
                         }
                     }
-                    _ => { self.stmt_to_ir(body); }
+                    _ => {
+                        self.stmt_to_ir(body);
+                    }
                 }
                 let body_final_block_label_opt = self.cfg.current_block.clone();
 
-
                 // --- Back Edge ---
                 if let Some(ref body_final_label) = body_final_block_label_opt {
-                     let needs_jump = match self.cfg.blocks.get(body_final_label).and_then(|b| b.instrs.last()) {
-                         Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => false,
-                         _ => true,
-                     };
-                     if needs_jump {
+                    let needs_jump = match self
+                        .cfg
+                        .blocks
+                        .get(body_final_label)
+                        .and_then(|b| b.instrs.last())
+                    {
+                        Some(Instr::Ret { .. })
+                        | Some(Instr::Jump(_))
+                        | Some(Instr::BranchIf(_, _, _)) => false,
+                        _ => true,
+                    };
+                    if needs_jump {
                         self.cfg.emit(Instr::Jump(header_label.clone()));
                         self.cfg.add_edge(body_final_label, &header_label); // header exists
-                     } else if self.cfg.blocks.contains_key(body_final_label) {
-                         self.cfg.add_edge(body_final_label, &header_label); // header exists
-                     }
+                    } else if self.cfg.blocks.contains_key(body_final_label) {
+                        self.cfg.add_edge(body_final_label, &header_label); // header exists
+                    }
                 }
                 self.cfg.current_block = None;
-
 
                 // --- Phi Patching ---
                 let final_body_scope = self.scopes.last().cloned().unwrap_or_default();
                 let mut back_edge_values = HashMap::new();
-                 for (var_name, (phi_ssa_name, initial_value_ssa)) in &phi_data {
+                for (var_name, (phi_ssa_name, initial_value_ssa)) in &phi_data {
                     if let Some(end_of_body_ssa_name) = final_body_scope.get(var_name) {
                         back_edge_values.insert(phi_ssa_name.clone(), end_of_body_ssa_name.clone());
                     } else {
@@ -356,15 +374,20 @@ impl SSA {
                                 if let Some(back_edge_val) = back_edge_values.get(phi_ssa_name) {
                                     edges.push((final_label.clone(), back_edge_val.clone()));
                                 } else {
-                                    eprintln!("Error: Could not find back-edge value for Phi node result '{}'", phi_ssa_name);
+                                    eprintln!(
+                                        "Error: Could not find back-edge value for Phi node result '{}'",
+                                        phi_ssa_name
+                                    );
                                 }
                             }
                         }
                     } else {
-                        panic!("Loop header block '{}' not found for Phi patching.", header_label);
+                        panic!(
+                            "Loop header block '{}' not found for Phi patching.",
+                            header_label
+                        );
                     }
                 }
-
 
                 // --- Loop Exit ---
                 // Block already created, just set current_block
@@ -373,22 +396,26 @@ impl SSA {
                 // --- Scope Handling ---
                 self.exit_scope(); // Exit loop body scope
                 if let Some(outer_scope) = self.scopes.last_mut() {
-                     for (var_name, (phi_ssa_name, _)) in phi_data {
-                         outer_scope.insert(var_name.clone(), phi_ssa_name.clone());
-                     }
+                    for (var_name, (phi_ssa_name, _)) in phi_data {
+                        outer_scope.insert(var_name.clone(), phi_ssa_name.clone());
+                    }
                 } else {
                     panic!("Cannot update outer scope after loop - scope stack empty.");
                 }
 
                 self.new_temp() // Return dummy temp for the statement
             }
-             Stmt::If {
+            Stmt::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
                 // 1. Get current block label (predecessor)
-                let pre_if_label = self.cfg.current_block.clone().expect("If statement needs a current block");
+                let pre_if_label = self
+                    .cfg
+                    .current_block
+                    .clone()
+                    .expect("If statement needs a current block");
 
                 // 2. Evaluate condition (emits instructions into pre_if_label block)
                 let cond_t = self.expr_to_ir(condition);
@@ -420,7 +447,6 @@ impl SSA {
                 // 7. Terminate pre_if_label block processing - current_block becomes None
                 self.cfg.current_block = None;
 
-
                 // --- Then Branch ---
                 self.cfg.start_block(&then_label); // Define the 'then' block
                 self.cfg.current_block = Some(then_label.clone()); // Set current for processing
@@ -431,18 +457,24 @@ impl SSA {
                 // Check if 'then' block needs explicit jump to merge
                 let then_final_label = self.cfg.current_block.clone(); // Label after processing then_branch
                 if let Some(current_then_label) = then_final_label {
-                     // If the block is still active (didn't return/break/etc.)
-                     let needs_jump = match self.cfg.blocks.get(&current_then_label).and_then(|b| b.instrs.last()) {
-                         Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => false,
-                         _ => true,
-                     };
-                     if needs_jump {
-                         self.cfg.emit(Instr::Jump(merge_label.clone()));
-                         self.cfg.add_edge(&current_then_label, &merge_label);
-                     }
+                    // If the block is still active (didn't return/break/etc.)
+                    let needs_jump = match self
+                        .cfg
+                        .blocks
+                        .get(&current_then_label)
+                        .and_then(|b| b.instrs.last())
+                    {
+                        Some(Instr::Ret { .. })
+                        | Some(Instr::Jump(_))
+                        | Some(Instr::BranchIf(_, _, _)) => false,
+                        _ => true,
+                    };
+                    if needs_jump {
+                        self.cfg.emit(Instr::Jump(merge_label.clone()));
+                        self.cfg.add_edge(&current_then_label, &merge_label);
+                    }
                 }
                 self.cfg.current_block = None; // Then branch processing finished
-
 
                 // --- Else Branch ---
                 self.cfg.start_block(&else_label); // Define the 'else' block
@@ -456,17 +488,23 @@ impl SSA {
                 // Check if 'else' block needs explicit jump to merge
                 let else_final_label = self.cfg.current_block.clone();
                 if let Some(current_else_label) = else_final_label {
-                     let needs_jump = match self.cfg.blocks.get(&current_else_label).and_then(|b| b.instrs.last()) {
-                         Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf(_, _, _)) => false,
-                         _ => true,
-                     };
-                     if needs_jump {
-                         self.cfg.emit(Instr::Jump(merge_label.clone()));
-                         self.cfg.add_edge(&current_else_label, &merge_label);
-                     }
+                    let needs_jump = match self
+                        .cfg
+                        .blocks
+                        .get(&current_else_label)
+                        .and_then(|b| b.instrs.last())
+                    {
+                        Some(Instr::Ret { .. })
+                        | Some(Instr::Jump(_))
+                        | Some(Instr::BranchIf(_, _, _)) => false,
+                        _ => true,
+                    };
+                    if needs_jump {
+                        self.cfg.emit(Instr::Jump(merge_label.clone()));
+                        self.cfg.add_edge(&current_else_label, &merge_label);
+                    }
                 }
                 self.cfg.current_block = None; // Else branch processing finished
-
 
                 // --- Merge Block ---
                 // Set current block to merge block to emit Phi nodes AND for subsequent statements
@@ -495,29 +533,59 @@ impl SSA {
 
                     match (then_val, else_val) {
                         // ... (existing Phi logic - seems okay) ...
-                        (Some(t_val), Some(e_val)) => { // Both defined
+                        (Some(t_val), Some(e_val)) => {
+                            // Both defined
                             if t_val != e_val {
                                 let phi_res = self.new_temp();
-                                self.cfg.emit(Instr::Phi(phi_res.clone(), vec![(then_label.clone(), t_val.clone()), (else_label.clone(), e_val.clone())]));
+                                self.cfg.emit(Instr::Phi(
+                                    phi_res.clone(),
+                                    vec![
+                                        (then_label.clone(), t_val.clone()),
+                                        (else_label.clone(), e_val.clone()),
+                                    ],
+                                ));
                                 self.assign_variable(var_name, &phi_res);
-                            } else { self.assign_variable(var_name, t_val); }
+                            } else {
+                                self.assign_variable(var_name, t_val);
+                            }
                         }
-                        (Some(t_val), None) => { // Only in Then
+                        (Some(t_val), None) => {
+                            // Only in Then
                             if let Some(pre_val) = pre_if_val {
                                 let phi_res = self.new_temp();
-                                self.cfg.emit(Instr::Phi(phi_res.clone(), vec![(then_label.clone(), t_val.clone()), (else_label.clone(), pre_val.clone())]));
+                                self.cfg.emit(Instr::Phi(
+                                    phi_res.clone(),
+                                    vec![
+                                        (then_label.clone(), t_val.clone()),
+                                        (else_label.clone(), pre_val.clone()),
+                                    ],
+                                ));
                                 self.assign_variable(var_name, &phi_res);
-                            } else { self.assign_variable(var_name, t_val); /* Warning emitted before */ }
+                            } else {
+                                self.assign_variable(var_name, t_val); /* Warning emitted before */
+                            }
                         }
-                        (None, Some(e_val)) => { // Only in Else
+                        (None, Some(e_val)) => {
+                            // Only in Else
                             if let Some(pre_val) = pre_if_val {
                                 let phi_res = self.new_temp();
-                                self.cfg.emit(Instr::Phi(phi_res.clone(), vec![(then_label.clone(), pre_val.clone()), (else_label.clone(), e_val.clone())]));
+                                self.cfg.emit(Instr::Phi(
+                                    phi_res.clone(),
+                                    vec![
+                                        (then_label.clone(), pre_val.clone()),
+                                        (else_label.clone(), e_val.clone()),
+                                    ],
+                                ));
                                 self.assign_variable(var_name, &phi_res);
-                            } else { self.assign_variable(var_name, e_val); /* Warning emitted before */ }
+                            } else {
+                                self.assign_variable(var_name, e_val); /* Warning emitted before */
+                            }
                         }
-                        (None, None) => { // Neither branch
-                            if let Some(pre_val) = pre_if_val { self.assign_variable(var_name, pre_val); }
+                        (None, None) => {
+                            // Neither branch
+                            if let Some(pre_val) = pre_if_val {
+                                self.assign_variable(var_name, pre_val);
+                            }
                         }
                     }
                 } // End Phi loop
@@ -566,8 +634,15 @@ impl SSA {
                     }
 
                     if let Some(last_block_label) = &ssa.cfg.current_block {
-                        let needs_ret = match ssa.cfg.blocks.get(last_block_label).and_then(|b| b.instrs.last()) {
-                            Some(Instr::Ret { .. }) | Some(Instr::Jump(_)) | Some(Instr::BranchIf { .. }) => false,
+                        let needs_ret = match ssa
+                            .cfg
+                            .blocks
+                            .get(last_block_label)
+                            .and_then(|b| b.instrs.last())
+                        {
+                            Some(Instr::Ret { .. })
+                            | Some(Instr::Jump(_))
+                            | Some(Instr::BranchIf { .. }) => false,
                             _ => true,
                         };
                         if needs_ret {
@@ -597,12 +672,17 @@ impl SSA {
 
                 self.assign_variable(&var_name, &rhs_temp);
 
-                if matches!(expr, Expr::Literal { value: Object::Nil }) { !rhs_temp.is_empty(); }
+                if matches!(expr, Expr::Literal { value: Object::Nil }) {
+                    rhs_temp.is_empty();
+                }
 
                 rhs_temp
             }
             stmt => {
-                eprintln!("Warning: Statement type {:?} not fully supported in SSA generation.", stmt);
+                eprintln!(
+                    "Warning: Statement type {:?} not fully supported in SSA generation.",
+                    stmt
+                );
                 self.new_temp()
             }
         }
@@ -610,7 +690,10 @@ impl SSA {
 
     fn expr_to_ir(&mut self, expr: &Expr) -> String {
         if self.cfg.current_block.is_none() {
-            panic!("Attempted to generate IR for expression {:?} without a current block.", expr);
+            panic!(
+                "Attempted to generate IR for expression {:?} without a current block.",
+                expr
+            );
         }
 
         match expr {
@@ -646,14 +729,26 @@ impl SSA {
                     TokenType::Star => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Mul, r)),
                     TokenType::Slash => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Div, r)),
                     TokenType::Modulo => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Mod, r)),
-                    TokenType::LeftShift => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Shl, r)),
-                    TokenType::RightShift => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Shr, r)),
-                    TokenType::BitAnd => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::BitAnd, r)),
+                    TokenType::LeftShift => {
+                        self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Shl, r))
+                    }
+                    TokenType::RightShift => {
+                        self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::Shr, r))
+                    }
+                    TokenType::BitAnd => {
+                        self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::BitAnd, r))
+                    }
                     TokenType::BitOr => self.cfg.emit(Instr::BinOp(temp.clone(), l, Op::BitOr, r)),
-                    TokenType::EqualEqual => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r)),
-                    TokenType::BangEqual => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Neq, r)),
+                    TokenType::EqualEqual => {
+                        self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Eq, r))
+                    }
+                    TokenType::BangEqual => {
+                        self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Neq, r))
+                    }
                     TokenType::Less => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lt, r)),
-                    TokenType::LessEqual => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r)),
+                    TokenType::LessEqual => {
+                        self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Lte, r))
+                    }
                     TokenType::Greater => self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gt, r)),
                     TokenType::GreaterEqual => {
                         self.cfg.emit(Instr::Cmp(temp.clone(), l, CmpOp::Gte, r))
@@ -669,7 +764,11 @@ impl SSA {
                 operator,
                 right,
             } => {
-                let entry_block = self.cfg.current_block.clone().expect("Logical expr needs current block");
+                let entry_block = self
+                    .cfg
+                    .current_block
+                    .clone()
+                    .expect("Logical expr needs current block");
                 let right_eval_label = self.new_label("logical_right");
                 let merge_label = self.new_label("logical_merge");
 
@@ -684,17 +783,24 @@ impl SSA {
                 // --- Conditional Branch ---
                 match operator.r#type {
                     TokenType::And => {
-
                         let phi = self.new_temp();
                         // ... Cmp ...
                         // If false (short-circuit), go to merge; otherwise, evaluate right.
-                        self.cfg.emit(Instr::BranchIf(phi, merge_label.clone(), right_eval_label.clone()));
+                        self.cfg.emit(Instr::BranchIf(
+                            phi,
+                            merge_label.clone(),
+                            right_eval_label.clone(),
+                        ));
                     }
                     TokenType::Or => {
                         let phi = self.new_temp();
                         // ... Cmp ...
                         // If true (short-circuit), go to merge; otherwise, evaluate right.
-                        self.cfg.emit(Instr::BranchIf(phi, merge_label.clone(), right_eval_label.clone()));
+                        self.cfg.emit(Instr::BranchIf(
+                            phi,
+                            merge_label.clone(),
+                            right_eval_label.clone(),
+                        ));
                     }
                     _ => unreachable!(),
                 }
@@ -708,7 +814,11 @@ impl SSA {
                 self.cfg.add_edge(&entry_block, &right_eval_label); // Add edge *after* creation
                 self.cfg.current_block = Some(right_eval_label.clone());
                 let right_val = self.expr_to_ir(right); // Evaluate right operand
-                let right_eval_final_block = self.cfg.current_block.clone().unwrap_or_else(|| right_eval_label.clone());
+                let right_eval_final_block = self
+                    .cfg
+                    .current_block
+                    .clone()
+                    .unwrap_or_else(|| right_eval_label.clone());
                 self.cfg.emit(Instr::Jump(merge_label.clone())); // Jump to merge
                 // self.cfg.add_edge(&right_eval_final_block, &merge_label); // Moved down
                 self.cfg.current_block = None; // Right eval block terminated
@@ -718,7 +828,6 @@ impl SSA {
                 self.cfg.add_edge(&entry_block, &merge_label); // Add edge *after* creation
                 self.cfg.add_edge(&right_eval_final_block, &merge_label); // Add edge *after* creation
                 self.cfg.current_block = Some(merge_label.clone());
-                
 
                 // --- Phi Node ---
                 // ... (Phi node generation) ...
@@ -754,7 +863,10 @@ impl SSA {
                 result_temp
             }
             e => {
-                eprintln!("Warning: Expression type {:?} not fully supported in SSA generation.", e);
+                eprintln!(
+                    "Warning: Expression type {:?} not fully supported in SSA generation.",
+                    e
+                );
                 let temp = self.new_temp();
                 self.cfg.emit(Instr::Const(temp.clone(), 0));
                 temp

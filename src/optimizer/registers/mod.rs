@@ -1,7 +1,7 @@
 pub mod linear_scan;
 
-use std::collections::BTreeMap;
 use crate::optimizer::CFG;
+use std::collections::BTreeMap;
 
 pub const AVAILABLE_REGS: [&str; 6] = ["%rbx", "%rbp", "%r12", "%r13", "%r14", "%r15"];
 

@@ -1,6 +1,6 @@
+use super::pass::Pass;
 use crate::optimizer::{CFG, CmpOp, Instr, Op};
 use std::collections::{HashMap, VecDeque};
-use super::pass::Pass;
 
 /// Global Value Numbering optimization pass.
 /// This pass identifies expressions that compute the same value and replaces them
@@ -54,15 +54,19 @@ impl Pass for GlobalValueNumbering {
 
         // Initialize worklist with all blocks
         let mut worklist: VecDeque<String> = cfg.blocks.keys().cloned().collect();
-        
+
         // Process blocks until fixpoint
         while let Some(label) = worklist.pop_front() {
             // Get block data we need before mutable borrow
             let (block_instrs, block_preds, block_succs) = {
                 let block = cfg.blocks.get(&label).unwrap();
-                (block.instrs.clone(), block.preds.clone(), block.succs.clone())
+                (
+                    block.instrs.clone(),
+                    block.preds.clone(),
+                    block.succs.clone(),
+                )
             };
-            
+
             // Compute entry state by merging predecessor exit states
             let mut entry_state = HashMap::new();
             if !block_preds.is_empty() {
@@ -70,8 +74,14 @@ impl Pass for GlobalValueNumbering {
                 for pred in &block_preds {
                     if let Some(pred_state) = block_exit_states.get(pred) {
                         for (var, &vn) in pred_state {
-                            entry_state.entry(var.clone())
-                                .and_modify(|e| if *e != vn { *e = next_vn; next_vn += 1; })
+                            entry_state
+                                .entry(var.clone())
+                                .and_modify(|e| {
+                                    if *e != vn {
+                                        *e = next_vn;
+                                        next_vn += 1;
+                                    }
+                                })
                                 .or_insert(vn);
                         }
                     }
@@ -89,15 +99,15 @@ impl Pass for GlobalValueNumbering {
 
             // Check if block's analysis changed
             let state_changed = block_exit_states.get(&label) != Some(&exit_state);
-            
+
             if state_changed {
                 // Update states
                 block_entry_states.insert(label.clone(), entry_state);
                 block_exit_states.insert(label.clone(), exit_state);
-                
+
                 // Update block instructions
                 cfg.blocks.get_mut(&label).unwrap().instrs = new_instrs;
-                
+
                 // Add successors to worklist
                 worklist.extend(block_succs);
             }
@@ -309,25 +319,31 @@ mod tests {
     #[test]
     fn test_simple_redundancy() {
         let pass = GlobalValueNumbering;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("c1", 1),
                 cnst("c2", 2),
                 binop("t0", "c1", Op::Add, "c2"),
-                binop("t1", "c1", Op::Add, "c2"),  // redundant
+                binop("t1", "c1", Op::Add, "c2"), // redundant
                 print("t1"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("c1", 1),
                 cnst("c2", 2),
                 binop("t0", "c1", Op::Add, "c2"),
-                assign("t1", "t0"),  // replaced with assignment
+                assign("t1", "t0"), // replaced with assignment
                 print("t1"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(pass.optimize(cfg), expected);
     }
@@ -336,45 +352,79 @@ mod tests {
     fn test_cross_block_redundancy() {
         let pass = GlobalValueNumbering;
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c1", 1),
-                cnst("c2", 2),
-                binop("a", "c1", Op::Add, "c2"),
-                branch("a", "then", "else"),
-            ], vec![], vec!["then", "else"]),
-            ("then", vec![
-                binop("b", "c1", Op::Add, "c2"),  // redundant with 'a'
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("else", vec![
-                binop("c", "c1", Op::Add, "c2"),  // redundant with 'a'
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("merge", vec![
-                phi("d", vec![("then", "b"), ("else", "c")]),
-                print("d"),
-            ], vec!["then", "else"], vec![]),
+            (
+                "entry",
+                vec![
+                    cnst("c1", 1),
+                    cnst("c2", 2),
+                    binop("a", "c1", Op::Add, "c2"),
+                    branch("a", "then", "else"),
+                ],
+                vec![],
+                vec!["then", "else"],
+            ),
+            (
+                "then",
+                vec![
+                    binop("b", "c1", Op::Add, "c2"), // redundant with 'a'
+                    jump("merge"),
+                ],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "else",
+                vec![
+                    binop("c", "c1", Op::Add, "c2"), // redundant with 'a'
+                    jump("merge"),
+                ],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "merge",
+                vec![phi("d", vec![("then", "b"), ("else", "c")]), print("d")],
+                vec!["then", "else"],
+                vec![],
+            ),
         ]);
 
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c1", 1),
-                cnst("c2", 2),
-                binop("a", "c1", Op::Add, "c2"),
-                branch("a", "then", "else"),
-            ], vec![], vec!["then", "else"]),
-            ("then", vec![
-                assign("b", "a"),  // replaced with assignment
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("else", vec![
-                assign("c", "a"),  // replaced with assignment
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("merge", vec![
-                phi("d", vec![("then", "b"), ("else", "c")]),
-                print("d"),
-            ], vec!["then", "else"], vec![]),
+            (
+                "entry",
+                vec![
+                    cnst("c1", 1),
+                    cnst("c2", 2),
+                    binop("a", "c1", Op::Add, "c2"),
+                    branch("a", "then", "else"),
+                ],
+                vec![],
+                vec!["then", "else"],
+            ),
+            (
+                "then",
+                vec![
+                    assign("b", "a"), // replaced with assignment
+                    jump("merge"),
+                ],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "else",
+                vec![
+                    assign("c", "a"), // replaced with assignment
+                    jump("merge"),
+                ],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "merge",
+                vec![phi("d", vec![("then", "b"), ("else", "c")]), print("d")],
+                vec!["then", "else"],
+                vec![],
+            ),
         ]);
 
         assert_eq!(pass.optimize(cfg), expected);
@@ -384,15 +434,22 @@ mod tests {
     fn test_phi_aware_numbering() {
         let pass = GlobalValueNumbering;
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("x", 1),
-                jump("loop"),
-            ], vec![], vec!["loop"]),
-            ("loop", vec![
-                phi("v", vec![("entry", "x"), ("loop", "v")]),
-                print("v"),
-                jump("loop"),
-            ], vec!["entry", "loop"], vec!["loop"]),
+            (
+                "entry",
+                vec![cnst("x", 1), jump("loop")],
+                vec![],
+                vec!["loop"],
+            ),
+            (
+                "loop",
+                vec![
+                    phi("v", vec![("entry", "x"), ("loop", "v")]),
+                    print("v"),
+                    jump("loop"),
+                ],
+                vec!["entry", "loop"],
+                vec!["loop"],
+            ),
         ]);
 
         // Phi should not be eliminated as it represents different values

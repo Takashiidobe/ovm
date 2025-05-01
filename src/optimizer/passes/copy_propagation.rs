@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use crate::optimizer::{CFG, Instr};
 use crate::optimizer::passes::pass::Pass;
+use crate::optimizer::{CFG, Instr};
 
 /// Copy Propagation Optimization Pass
-/// 
+///
 /// Replaces uses of variables that are copies of other variables
 /// with the original variable.
 /// Example: If `y = x`, subsequent uses of `y` become uses of `x`.
@@ -130,21 +130,27 @@ mod tests {
     #[test]
     fn test_simple_copy() {
         let pass = CopyPropagation;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("x", 10),
-                assign("y", "x"),  // y = x
-                print("y"),        // Should become Print(x)
-            ], vec![], vec![]),
-        ]);
+                assign("y", "x"), // y = x
+                print("y"),       // Should become Print(x)
+            ],
+            vec![],
+            vec![],
+        )]);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("x", 10),
                 assign("y", "x"),
-                print("x"),        // Use propagated
-            ], vec![], vec![]),
-        ]);
+                print("x"), // Use propagated
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(pass.optimize(cfg), expected);
     }
@@ -152,23 +158,29 @@ mod tests {
     #[test]
     fn test_copy_chain() {
         let pass = CopyPropagation;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("x", 10),
-                assign("y", "x"),  // y = x
-                assign("z", "y"),  // z = y
-                print("z"),        // Should become Print(x)
-            ], vec![], vec![]),
-        ]);
+                assign("y", "x"), // y = x
+                assign("z", "y"), // z = y
+                print("z"),       // Should become Print(x)
+            ],
+            vec![],
+            vec![],
+        )]);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("x", 10),
                 assign("y", "x"),
-                assign("z", "x"),  // Propagated source
-                print("x"),        // Use fully propagated
-            ], vec![], vec![]),
-        ]);
+                assign("z", "x"), // Propagated source
+                print("x"),       // Use fully propagated
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(pass.optimize(cfg), expected);
     }
@@ -177,25 +189,41 @@ mod tests {
     fn test_cross_block_limitation() {
         let pass = CopyPropagation;
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("x", 10),
-                assign("y", "x"),  // y = x
-                jump("next"),
-            ], vec![], vec!["next"]),
-            ("next", vec![
-                print("y"),        // Should NOT become Print(x) - different block
-            ], vec!["entry"], vec![]),
+            (
+                "entry",
+                vec![
+                    cnst("x", 10),
+                    assign("y", "x"), // y = x
+                    jump("next"),
+                ],
+                vec![],
+                vec!["next"],
+            ),
+            (
+                "next",
+                vec![
+                    print("y"), // Should NOT become Print(x) - different block
+                ],
+                vec!["entry"],
+                vec![],
+            ),
         ]);
 
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("x", 10),
-                assign("y", "x"),
-                jump("next"),
-            ], vec![], vec!["next"]),
-            ("next", vec![
-                print("y"),        // Stays as y - copies don't propagate across blocks
-            ], vec!["entry"], vec![]),
+            (
+                "entry",
+                vec![cnst("x", 10), assign("y", "x"), jump("next")],
+                vec![],
+                vec!["next"],
+            ),
+            (
+                "next",
+                vec![
+                    print("y"), // Stays as y - copies don't propagate across blocks
+                ],
+                vec!["entry"],
+                vec![],
+            ),
         ]);
 
         assert_eq!(pass.optimize(cfg), expected);
@@ -204,23 +232,29 @@ mod tests {
     #[test]
     fn test_copy_killed_by_redefinition() {
         let pass = CopyPropagation;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("x", 10),
-                assign("y", "x"),  // y = x
-                cnst("y", 20),     // y redefined
-                print("y"),        // Should print y (not x)
-            ], vec![], vec![]),
-        ]);
+                assign("y", "x"), // y = x
+                cnst("y", 20),    // y redefined
+                print("y"),       // Should print y (not x)
+            ],
+            vec![],
+            vec![],
+        )]);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("x", 10),
                 assign("y", "x"),
                 cnst("y", 20),
-                print("y"),        // Uses redefined y
-            ], vec![], vec![]),
-        ]);
+                print("y"), // Uses redefined y
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(pass.optimize(cfg), expected);
     }

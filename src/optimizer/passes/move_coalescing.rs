@@ -1,5 +1,5 @@
-use crate::optimizer::{CFG, Instr};
-use crate::optimizer::passes::pass::Pass; // Import Pass trait
+use crate::optimizer::passes::pass::Pass;
+use crate::optimizer::{CFG, Instr}; // Import Pass trait
 
 /// Move Coalescing Optimization Pass
 ///
@@ -37,7 +37,8 @@ impl Pass for MoveCoalescing {
                         (Instr::Assign(temp_reg, src1_reg), Instr::Assign(dest_reg, src2_reg))
                             if temp_reg == src2_reg =>
                         {
-                            optimized_instrs.push(Instr::Assign(dest_reg.clone(), src1_reg.clone()));
+                            optimized_instrs
+                                .push(Instr::Assign(dest_reg.clone(), src1_reg.clone()));
                             i += 2;
                         }
                         // Pattern 3: Phi(temp, preds) followed by Assign(dest, temp)
@@ -46,9 +47,12 @@ impl Pass for MoveCoalescing {
                         {
                             // Coalesce by making the Phi write directly to the final destination
                             let reordered_pred_vals: Vec<_> = pred_vals
-                                .iter().filter(|&(pred, _)| block.preds.contains(pred)).cloned()
+                                .iter()
+                                .filter(|&(pred, _)| block.preds.contains(pred))
+                                .cloned()
                                 .collect();
-                            optimized_instrs.push(Instr::Phi(dest_reg.clone(), reordered_pred_vals));
+                            optimized_instrs
+                                .push(Instr::Phi(dest_reg.clone(), reordered_pred_vals));
                             i += 2;
                         }
                         _ => {
@@ -79,67 +83,96 @@ mod tests {
     #[test]
     fn test_coalesce_const_assign() {
         let pass = MoveCoalescing;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t1", 10),
-                assign("x", "t1"),
-                print("x"),
-            ], vec![], vec![]),
-        ]);
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![cnst("t1", 10), assign("x", "t1"), print("x")],
+            vec![],
+            vec![],
+        )]);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("x", 10),
-                print("x"),
-            ], vec![], vec![]),
-        ]);
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![cnst("x", 10), print("x")],
+            vec![],
+            vec![],
+        )]);
 
-        assert_eq!(pass.optimize(cfg), expected, "Test failed for coalesce_const_assign");
+        assert_eq!(
+            pass.optimize(cfg),
+            expected,
+            "Test failed for coalesce_const_assign"
+        );
     }
 
     #[test]
     fn test_coalesce_phi_assign() {
         let pass = MoveCoalescing;
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c", 1),
-                branch("c", "then", "else"),
-            ], vec![], vec!["then", "else"]),
-            ("then", vec![
-                cnst("a", 10),
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("else", vec![
-                cnst("b", 20),
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("merge", vec![
-                phi("temp", vec![("then", "a"), ("else", "b")]),
-                assign("x", "temp"),  // This assign should be coalesced
-                print("x"),
-            ], vec!["then", "else"], vec![]),
+            (
+                "entry",
+                vec![cnst("c", 1), branch("c", "then", "else")],
+                vec![],
+                vec!["then", "else"],
+            ),
+            (
+                "then",
+                vec![cnst("a", 10), jump("merge")],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "else",
+                vec![cnst("b", 20), jump("merge")],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "merge",
+                vec![
+                    phi("temp", vec![("then", "a"), ("else", "b")]),
+                    assign("x", "temp"), // This assign should be coalesced
+                    print("x"),
+                ],
+                vec!["then", "else"],
+                vec![],
+            ),
         ]);
 
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c", 1),
-                branch("c", "then", "else"),
-            ], vec![], vec!["then", "else"]),
-            ("then", vec![
-                cnst("a", 10),
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("else", vec![
-                cnst("b", 20),
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("merge", vec![
-                phi("x", vec![("then", "a"), ("else", "b")]),  // Phi writes directly to x
-                print("x"),
-            ], vec!["then", "else"], vec![]),
+            (
+                "entry",
+                vec![cnst("c", 1), branch("c", "then", "else")],
+                vec![],
+                vec!["then", "else"],
+            ),
+            (
+                "then",
+                vec![cnst("a", 10), jump("merge")],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "else",
+                vec![cnst("b", 20), jump("merge")],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "merge",
+                vec![
+                    phi("x", vec![("then", "a"), ("else", "b")]), // Phi writes directly to x
+                    print("x"),
+                ],
+                vec!["then", "else"],
+                vec![],
+            ),
         ]);
 
-        assert_eq!(pass.optimize(cfg), expected, "Test failed for coalesce_phi_assign");
+        assert_eq!(
+            pass.optimize(cfg),
+            expected,
+            "Test failed for coalesce_phi_assign"
+        );
     }
 
     // ... add more tests for cross-block patterns ...

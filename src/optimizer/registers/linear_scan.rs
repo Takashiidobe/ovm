@@ -153,19 +153,21 @@ impl RegisterAllocator for LinearScan {
             if let Some(block) = cfg.blocks.get(label) {
                 let block_start_linear_idx = current_linear_idx;
                 for (idx_in_block, instr) in block.instrs.iter().enumerate() {
-                    linear_to_original_map.insert(current_linear_idx, (label.clone(), idx_in_block));
-                    original_to_linear_map.insert((label.clone(), idx_in_block), current_linear_idx);
+                    linear_to_original_map
+                        .insert(current_linear_idx, (label.clone(), idx_in_block));
+                    original_to_linear_map
+                        .insert((label.clone(), idx_in_block), current_linear_idx);
                     linearized_instrs.push(instr.clone());
                     current_linear_idx += 1;
                 }
-                block_linear_ranges.insert(label.clone(), block_start_linear_idx..current_linear_idx);
+                block_linear_ranges
+                    .insert(label.clone(), block_start_linear_idx..current_linear_idx);
             }
         }
         let total_linear_instrs = linearized_instrs.len();
         if total_linear_instrs == 0 {
-             return (cfg.clone(), BTreeMap::new()); // Handle empty CFG case
+            return (cfg.clone(), BTreeMap::new()); // Handle empty CFG case
         }
-
 
         // --- 2. Liveness Analysis (using CFG structure) ---
         // Store liveness results temporarily
@@ -201,7 +203,9 @@ impl RegisterAllocator for LinearScan {
             // Iterate backwards over sorted labels for potentially faster convergence
             for label in sorted_block_labels.iter().rev() {
                 // Check if block exists before proceeding
-                if !cfg.blocks.contains_key(label) { continue; }
+                if !cfg.blocks.contains_key(label) {
+                    continue;
+                }
 
                 let block = cfg.blocks.get(label).unwrap(); // Known to exist
                 let current_info = liveness_info.get(label).unwrap(); // Known to exist
@@ -284,7 +288,9 @@ impl RegisterAllocator for LinearScan {
                     // Next instruction is the last in its block
                     let live_out_next_block = next_block_info.live_out.clone();
                     let mut live_out_minus_defs = live_out_next_block;
-                    for def in &defs_next { live_out_minus_defs.remove(def); }
+                    for def in &defs_next {
+                        live_out_minus_defs.remove(def);
+                    }
                     live_in_next = uses_next;
                     live_in_next.extend(live_out_minus_defs);
                 } else {
@@ -294,31 +300,35 @@ impl RegisterAllocator for LinearScan {
                     let mut live = block_info.live_out.clone(); // Start with live out of the block
                     let mut found_live_after = false;
                     for i_lin in (block_range_linear.start..block_range_linear.end).rev() {
-                         let current_instr = &linearized_instrs[i_lin];
-                         let (defs_curr, uses_curr) = Self::get_instr_defs_uses(current_instr);
+                        let current_instr = &linearized_instrs[i_lin];
+                        let (defs_curr, uses_curr) = Self::get_instr_defs_uses(current_instr);
 
-                         // 'live' currently holds live_out[i_lin]
-                         if i_lin == linear_idx {
-                             live_after_instr = live.clone();
-                             found_live_after = true;
-                             break;
-                         }
+                        // 'live' currently holds live_out[i_lin]
+                        if i_lin == linear_idx {
+                            live_after_instr = live.clone();
+                            found_live_after = true;
+                            break;
+                        }
 
-                         // Calculate live_in[i_lin] = uses[i_lin] U (live_out[i_lin] - defs[i_lin])
-                         let mut live_before = live.clone();
-                         for def in &defs_curr { live_before.remove(def); }
-                         live_before.extend(uses_curr);
+                        // Calculate live_in[i_lin] = uses[i_lin] U (live_out[i_lin] - defs[i_lin])
+                        let mut live_before = live.clone();
+                        for def in &defs_curr {
+                            live_before.remove(def);
+                        }
+                        live_before.extend(uses_curr);
 
-                         // Update 'live' for the next iteration (previous instruction)
-                         live = live_before;
+                        // Update 'live' for the next iteration (previous instruction)
+                        live = live_before;
                     }
                     if !found_live_after {
                         // Should not happen if linear_idx is within the block range
-                        panic!("Could not determine live_after_instr for linear index {}", linear_idx);
+                        panic!(
+                            "Could not determine live_after_instr for linear index {}",
+                            linear_idx
+                        );
                     }
                 }
             }
-
 
             // --- Update Interval Ranges based on Live Variables ---
             // Extend interval for any variable live *after* this instruction
@@ -363,17 +373,18 @@ impl RegisterAllocator for LinearScan {
 
             // Phi nodes definitions conceptually happen at the start of the block.
             if let Instr::Phi(dest, _) = instr {
-                 let block_start_linear = block_range_linear.start;
-                 let interval = intervals.entry(dest.clone()).or_insert_with(|| LiveInterval {
-                     var: dest.clone(),
-                     range: block_start_linear..block_start_linear + 1,
-                     location: None,
-                 });
-                 interval.range.start = interval.range.start.min(block_start_linear);
-                 // End is extended by uses/liveness check
+                let block_start_linear = block_range_linear.start;
+                let interval = intervals
+                    .entry(dest.clone())
+                    .or_insert_with(|| LiveInterval {
+                        var: dest.clone(),
+                        range: block_start_linear..block_start_linear + 1,
+                        location: None,
+                    });
+                interval.range.start = interval.range.start.min(block_start_linear);
+                // End is extended by uses/liveness check
             }
         }
-
 
         // --- 4. Pre-color Function Parameters based on ABI ---
         let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
@@ -450,7 +461,8 @@ impl RegisterAllocator for LinearScan {
             let location: Location;
             // Check available registers considering *all* registers minus active ones
             let num_available_total = AVAILABLE_REGS.len();
-            if active.len() >= num_available_total { // Check against total available regs
+            if active.len() >= num_available_total {
+                // Check against total available regs
                 // Spill: No free registers among the total set
                 active.sort_by_key(|i| i.range.end); // Ensure active is sorted by end point
                 let spill_candidate = &active[active.len() - 1]; // Last element ends latest
@@ -469,12 +481,14 @@ impl RegisterAllocator for LinearScan {
                     let spilled_interval = active.pop().unwrap(); // Remove the last one
                     let reg = match &spilled_interval.location {
                         Some(Location::Register(r)) => r.clone(),
-                        _ => panic!("Interval to spill had no register! Var: {}", spilled_interval.var),
+                        _ => panic!(
+                            "Interval to spill had no register! Var: {}",
+                            spilled_interval.var
+                        ),
                     };
                     eprintln!(
                         "Spilling ACTIVE: {} (range {:?}) for {} (range {:?})",
-                        spilled_interval.var, spilled_interval.range,
-                        current.var, current.range
+                        spilled_interval.var, spilled_interval.range, current.var, current.range
                     );
                     final_locations.insert(spilled_interval.var.clone(), Location::Spill);
 
@@ -488,7 +502,9 @@ impl RegisterAllocator for LinearScan {
                 }
             } else {
                 // Allocate register
-                let reg = free_regs.pop_front().expect("Free regs available but list empty!");
+                let reg = free_regs
+                    .pop_front()
+                    .expect("Free regs available but list empty!");
                 location = Location::Register(reg);
                 final_locations.insert(current.var.clone(), location.clone());
                 current.location = Some(location.clone());
@@ -500,7 +516,7 @@ impl RegisterAllocator for LinearScan {
 
         // Ensure all variables have a location assigned. Default to spill.
         for var in all_vars {
-             final_locations.entry(var.clone()).or_insert_with(|| {
+            final_locations.entry(var.clone()).or_insert_with(|| {
                   eprintln!("Warning: Variable {} was not assigned a location by LSRA, defaulting to Spill.", var);
                   Location::Spill
               });

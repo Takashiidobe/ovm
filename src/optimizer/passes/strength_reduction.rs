@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use crate::optimizer::{CFG, Instr, Op};
 use crate::optimizer::passes::pass::Pass;
+use crate::optimizer::{CFG, Instr, Op};
+use std::collections::HashMap;
 
 /// Strength Reduction Optimization Pass
 ///
@@ -28,11 +28,11 @@ impl Pass for StrengthReduction {
     fn optimize(&self, mut cfg: CFG) -> CFG {
         // Track constants across the CFG
         let mut constants: HashMap<String, i64> = HashMap::new();
-        
+
         // Process each block
         for block in cfg.blocks.values_mut() {
             let mut optimized_instrs = Vec::with_capacity(block.instrs.len());
-            
+
             for instr in &block.instrs {
                 match instr {
                     Instr::Const(name, val) => {
@@ -75,11 +75,14 @@ impl Pass for StrengthReduction {
                                         for (i, &k) in exponents.iter().enumerate() {
                                             // 1. Create shift amount constant
                                             let shift_amount_reg = format!("{}_shift_{}", dest, k);
-                                            optimized_instrs
-                                                .push(Instr::Const(shift_amount_reg.clone(), k as i64));
+                                            optimized_instrs.push(Instr::Const(
+                                                shift_amount_reg.clone(),
+                                                k as i64,
+                                            ));
 
                                             // 2. Perform the shift: x << k
-                                            let shl_temp = if is_first_term && exponents.len() == 1 {
+                                            let shl_temp = if is_first_term && exponents.len() == 1
+                                            {
                                                 // If only one term, result goes directly to dest
                                                 dest.clone()
                                             } else {
@@ -127,7 +130,8 @@ impl Pass for StrengthReduction {
                                             .push(Instr::Assign(dest.clone(), left.clone()));
                                         handled_mul = true;
                                     } else if rv > 1 {
-                                        if let Some(exponent) = Self::get_power_of_two_exponent(rv) {
+                                        if let Some(exponent) = Self::get_power_of_two_exponent(rv)
+                                        {
                                             // Optimization: x * 2^k => x << k
                                             let shift_amount_reg = format!("{}_shift_amt", dest);
                                             optimized_instrs.push(Instr::Const(
@@ -166,10 +170,12 @@ impl Pass for StrengthReduction {
                                                 .push(Instr::Assign(dest.clone(), right.clone()));
                                             handled_mul = true;
                                         } else if lv > 1 {
-                                            if let Some(exponent) = Self::get_power_of_two_exponent(lv)
+                                            if let Some(exponent) =
+                                                Self::get_power_of_two_exponent(lv)
                                             {
                                                 // Optimization: 2^k * x => x << k
-                                                let shift_amount_reg = format!("{}_shift_amt", dest);
+                                                let shift_amount_reg =
+                                                    format!("{}_shift_amt", dest);
                                                 optimized_instrs.push(Instr::Const(
                                                     shift_amount_reg.clone(),
                                                     exponent as i64,
@@ -204,8 +210,10 @@ impl Pass for StrengthReduction {
                                 {
                                     // x / (2^exponent) => x >> exponent_const
                                     let shift_amount_reg = format!("{}_shift_amt", dest);
-                                    optimized_instrs
-                                        .push(Instr::Const(shift_amount_reg.clone(), exponent as i64));
+                                    optimized_instrs.push(Instr::Const(
+                                        shift_amount_reg.clone(),
+                                        exponent as i64,
+                                    ));
                                     optimized_instrs.push(Instr::BinOp(
                                         dest.clone(),
                                         left.clone(),
@@ -257,7 +265,10 @@ impl Pass for StrengthReduction {
                     }
                     Instr::FuncParam { name, .. } => {
                         constants.remove(name);
-                        optimized_instrs.push(Instr::FuncParam { name: name.clone(), index: 0 }); // Keep instruction
+                        optimized_instrs.push(Instr::FuncParam {
+                            name: name.clone(),
+                            index: 0,
+                        }); // Keep instruction
                     }
                     _ => {
                         // For other instructions, invalidate potential definitions
@@ -269,10 +280,10 @@ impl Pass for StrengthReduction {
                     }
                 }
             }
-            
+
             block.instrs = optimized_instrs;
         }
-        
+
         cfg
     }
 
@@ -304,24 +315,30 @@ mod tests {
     #[test]
     fn test_multiply_by_power_of_two() {
         let pass = StrengthReduction;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 5),
                 cnst("t1", 8),
                 binop("t2", "t0", Op::Mul, "t1"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 5),
                 cnst("t1", 8),
                 cnst("t2_shift_amt", 3),
                 binop("t2", "t0", Op::Shl, "t2_shift_amt"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(pass.optimize(cfg), expected);
     }
@@ -329,24 +346,30 @@ mod tests {
     #[test]
     fn test_divide_by_power_of_two() {
         let pass = StrengthReduction;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 40),
                 cnst("t1", 4),
                 binop("t2", "t0", Op::Div, "t1"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 40),
                 cnst("t1", 4),
                 cnst("t2_shift_amt", 2),
                 binop("t2", "t0", Op::Shr, "t2_shift_amt"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(pass.optimize(cfg), expected);
     }
@@ -355,47 +378,84 @@ mod tests {
     fn test_strength_reduction_across_blocks() {
         let pass = StrengthReduction;
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c", 8),  // Power of 2 constant
-                branch("cond", "then", "else"),
-            ], vec![], vec!["then", "else"]),
-            ("then", vec![
-                cnst("x", 5),
-                binop("y", "x", Op::Mul, "c"),  // Should be reduced to shift
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("else", vec![
-                cnst("x", 10),
-                binop("y", "x", Op::Mul, "c"),  // Should be reduced to shift
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("merge", vec![
-                phi("result", vec![("then", "y"), ("else", "y")]),
-                print("result"),
-            ], vec!["then", "else"], vec![]),
+            (
+                "entry",
+                vec![
+                    cnst("c", 8), // Power of 2 constant
+                    branch("cond", "then", "else"),
+                ],
+                vec![],
+                vec!["then", "else"],
+            ),
+            (
+                "then",
+                vec![
+                    cnst("x", 5),
+                    binop("y", "x", Op::Mul, "c"), // Should be reduced to shift
+                    jump("merge"),
+                ],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "else",
+                vec![
+                    cnst("x", 10),
+                    binop("y", "x", Op::Mul, "c"), // Should be reduced to shift
+                    jump("merge"),
+                ],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "merge",
+                vec![
+                    phi("result", vec![("then", "y"), ("else", "y")]),
+                    print("result"),
+                ],
+                vec!["then", "else"],
+                vec![],
+            ),
         ]);
 
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c", 8),
-                branch("cond", "then", "else"),
-            ], vec![], vec!["then", "else"]),
-            ("then", vec![
-                cnst("x", 5),
-                cnst("y_shift_amt", 3),
-                binop("y", "x", Op::Shl, "y_shift_amt"),
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("else", vec![
-                cnst("x", 10),
-                cnst("y_shift_amt", 3),
-                binop("y", "x", Op::Shl, "y_shift_amt"),
-                jump("merge"),
-            ], vec!["entry"], vec!["merge"]),
-            ("merge", vec![
-                phi("result", vec![("then", "y"), ("else", "y")]),
-                print("result"),
-            ], vec!["then", "else"], vec![]),
+            (
+                "entry",
+                vec![cnst("c", 8), branch("cond", "then", "else")],
+                vec![],
+                vec!["then", "else"],
+            ),
+            (
+                "then",
+                vec![
+                    cnst("x", 5),
+                    cnst("y_shift_amt", 3),
+                    binop("y", "x", Op::Shl, "y_shift_amt"),
+                    jump("merge"),
+                ],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "else",
+                vec![
+                    cnst("x", 10),
+                    cnst("y_shift_amt", 3),
+                    binop("y", "x", Op::Shl, "y_shift_amt"),
+                    jump("merge"),
+                ],
+                vec!["entry"],
+                vec!["merge"],
+            ),
+            (
+                "merge",
+                vec![
+                    phi("result", vec![("then", "y"), ("else", "y")]),
+                    print("result"),
+                ],
+                vec!["then", "else"],
+                vec![],
+            ),
         ]);
 
         assert_eq!(pass.optimize(cfg), expected);
@@ -404,14 +464,17 @@ mod tests {
     #[test]
     fn test_divide_by_non_power_of_two() {
         let pass = StrengthReduction;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 40),
                 cnst("t1", 5), // Not power of 2
                 binop("t2", "t0", Op::Div, "t1"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let original_cfg = cfg.clone();
         let optimized = pass.optimize(cfg);
@@ -423,14 +486,17 @@ mod tests {
     #[test]
     fn test_divide_non_constant_divisor() {
         let pass = StrengthReduction;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 40),
                 assign("t1", "some_var"), // t1 is not constant
                 binop("t2", "t0", Op::Div, "t1"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let original_cfg = cfg.clone();
         let optimized = pass.optimize(cfg);
@@ -442,26 +508,32 @@ mod tests {
     #[test]
     fn test_multiply_non_constant() {
         let pass = StrengthReduction;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 assign("t0", "some_var"), // t0 is not constant
                 cnst("t1", 8),
                 binop("t2", "t0", Op::Mul, "t1"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         // Expect the multiply with const 8 on the right to be converted
         let optimized = pass.optimize(cfg);
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 assign("t0", "some_var"),
                 cnst("t1", 8),
                 cnst("t2_shift_amt", 3),
                 binop("t2", "t0", Op::Shl, "t2_shift_amt"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
         assert_eq!(optimized, expected);
     }
 
@@ -470,31 +542,38 @@ mod tests {
         // This test demonstrates that the pass handles simple constant propagation
         // through Assign instructions due to its internal `constants` map.
         let pass = StrengthReduction;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("c8", 8),
                 assign("t1", "c8"), // t1 = 8, propagated internally
                 cnst("t0", 5),
                 binop("t2", "t0", Op::Mul, "t1"), // t2 = t0 * t1 (should be reduced)
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         // Because the pass tracks constants and propagates them through Assign,
         // it correctly identifies t1 as 8 and performs strength reduction.
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("c8", 8),
                 assign("t1", "c8"),
                 cnst("t0", 5),
                 cnst("t2_shift_amt", 3),
                 binop("t2", "t0", Op::Shl, "t2_shift_amt"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(
-            pass.optimize(cfg), expected,
+            pass.optimize(cfg),
+            expected,
             "Optimization should happen due to internal constant propagation through Assign"
         );
     }
@@ -502,18 +581,22 @@ mod tests {
     #[test]
     fn test_multiply_by_constant_shift_add() {
         let pass = StrengthReduction;
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 5),  // x = 5
                 cnst("t1", 10), // c = 10 (binary 1010)
                 binop("t2", "t0", Op::Mul, "t1"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         // Expected: t2 = (t0 << 1) + (t0 << 3)
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 5),
                 cnst("t1", 10),
                 // Shift for bit 1 (k=1)
@@ -525,8 +608,10 @@ mod tests {
                 // Add the results: (x << 1) + (x << 3)
                 binop("t2", "t2_shl_1", Op::Add, "t2_shl_3"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(pass.optimize(cfg), expected);
     }

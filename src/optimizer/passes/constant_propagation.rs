@@ -20,7 +20,8 @@ impl Pass for ConstantPropagation {
             let mut constants: HashMap<String, i64> = HashMap::new();
             let mut new_instrs = Vec::with_capacity(block.instrs.len());
 
-            for instr in &block.instrs { // Iterate over original instructions
+            for instr in &block.instrs {
+                // Iterate over original instructions
                 // Clone instruction to potentially modify operands
                 let mut current_instr = instr.clone();
 
@@ -143,8 +144,8 @@ impl Pass for ConstantPropagation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::passes::test_helpers::*; // Import helpers
-    use crate::optimizer::Op; // Keep Op, CmpOp
+    use crate::optimizer::Op;
+    use crate::optimizer::passes::test_helpers::*; // Import helpers // Keep Op, CmpOp
 
     #[test]
     fn test_basic_propagation() {
@@ -152,7 +153,7 @@ mod tests {
             "entry",
             vec![
                 cnst("c", 10),
-                assign("x", "c"), // x = c
+                assign("x", "c"),              // x = c
                 binop("y", "x", Op::Add, "c"), // y = x + c
                 print("y"),
             ],
@@ -167,9 +168,9 @@ mod tests {
             "entry",
             vec![
                 cnst("c", 10),
-                assign("x", "10"), // Propagated
+                assign("x", "10"),               // Propagated
                 binop("y", "10", Op::Add, "10"), // Propagated
-                print("y"), // y is not constant within the block
+                print("y"),                      // y is not constant within the block
             ],
             vec![],
             vec![],
@@ -180,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_propagation_chain() {
-         let cfg = create_test_cfg(vec![(
+        let cfg = create_test_cfg(vec![(
             "entry",
             vec![
                 cnst("a", 5),
@@ -217,7 +218,7 @@ mod tests {
                 cnst("x", 1),
                 assign("y", "x"), // y = x -> y = 1
                 cnst("z", 100),
-                assign("x", "z"), // x = z -> x = 100
+                assign("x", "z"),              // x = z -> x = 100
                 binop("w", "y", Op::Add, "x"), // w = y + x
                 print("w"),
             ],
@@ -234,9 +235,9 @@ mod tests {
                 cnst("x", 1),
                 assign("y", "1"), // Propagated original x=1
                 cnst("z", 100),
-                assign("x", "100"), // Propagated z=100
+                assign("x", "100"),              // Propagated z=100
                 binop("w", "1", Op::Add, "100"), // Propagated y=1 and new x=100
-                print("w"), // w is not constant yet
+                print("w"),                      // w is not constant yet
             ],
             vec![],
             vec![],
@@ -287,19 +288,22 @@ mod tests {
                 vec![],
                 vec!["L1", "L2"],
             ),
-            ( // L1 is unchanged by this pass
+            (
+                // L1 is unchanged by this pass
                 "L1",
                 vec![print("never"), jump("L3")],
                 vec!["entry"],
                 vec!["L3"],
             ),
-            ( // L2 is unchanged by this pass
+            (
+                // L2 is unchanged by this pass
                 "L2",
                 vec![print("always"), jump("L3")],
                 vec!["entry"],
                 vec!["L3"],
             ),
-            ( // L3 is unchanged by this pass
+            (
+                // L3 is unchanged by this pass
                 "L3",
                 vec![ret()],
                 vec!["L1", "L2"],
@@ -312,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_call_arg_propagation() {
-         let cfg = create_test_cfg(vec![(
+        let cfg = create_test_cfg(vec![(
             "entry",
             vec![
                 cnst("arg1", 42),
@@ -333,7 +337,7 @@ mod tests {
                 cnst("arg1", 42),
                 cnst("arg2", 99),
                 call("foo", vec!["42", "99"], Some("res")), // Args propagated
-                print("res"), // Result not constant
+                print("res"),                               // Result not constant
             ],
             vec![],
             vec![],
@@ -341,9 +345,9 @@ mod tests {
         assert_eq!(optimized_cfg, expected_cfg);
     }
 
-     #[test]
+    #[test]
     fn test_ret_val_propagation() {
-         let cfg = create_test_cfg(vec![(
+        let cfg = create_test_cfg(vec![(
             "entry",
             vec![
                 cnst("ret_val", 100),
@@ -373,9 +377,9 @@ mod tests {
         let cfg = create_test_cfg(vec![(
             "entry",
             vec![
-                cnst("res", 1), // res = 1
+                cnst("res", 1),                   // res = 1
                 call("foo", vec![], Some("res")), // Call redefines res
-                assign("other", "res"), // other = res
+                assign("other", "res"),           // other = res
             ],
             vec![],
             vec![],
@@ -420,7 +424,7 @@ mod tests {
 
         // Expected: 'a' is not propagated into 'next' block
         let expected_cfg = create_test_cfg(vec![
-             (
+            (
                 "entry",
                 vec![cnst("a", 10), jump("next")], // Unchanged
                 vec![],

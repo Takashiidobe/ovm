@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::optimizer::{CFG, registers::Location, CmpOp, Instr, Op}; // Added cfg::CFG
+use crate::optimizer::{CFG, CmpOp, Instr, Op, registers::Location}; // Added cfg::CFG
 
 use super::Backend;
 
@@ -23,10 +23,12 @@ impl Backend for Codegen {
 
         // --- Helper to resolve SSA temps to locations ---
         let resolve = |t: &String| -> String {
-            match locations
-                .get(t)
-                .unwrap_or_else(|| panic!("Codegen: Could not find location for temporary variable '{}'", t))
-            {
+            match locations.get(t).unwrap_or_else(|| {
+                panic!(
+                    "Codegen: Could not find location for temporary variable '{}'",
+                    t
+                )
+            }) {
                 Location::Register(reg) => reg.clone(),
                 Location::Spill => format!("{}(%rip)", t), // Assumes temps are globals in .bss
             }
@@ -51,12 +53,16 @@ impl Backend for Codegen {
         self.add(".section .text");
         // Assuming 'main' is the entry point for now. Proper function handling needed later.
         // Find the 'main' block label if it exists, otherwise assume the first block is main.
-        let entry_label = cfg.blocks.keys().next().cloned().unwrap_or_else(|| "main".to_string());
+        let entry_label = cfg
+            .blocks
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "main".to_string());
         if entry_label == "main" {
-             self.add(".globl main");
+            self.add(".globl main");
         }
         // Could add .globl for other function entry points if CFG distinguishes them.
-
 
         // --- Iterate Through CFG Blocks (Sorted for Determinism) ---
         let sorted_block_labels: Vec<_> = cfg.blocks.keys().cloned().collect();
@@ -64,7 +70,10 @@ impl Backend for Codegen {
         // For now, alphabetical sort is deterministic.
 
         for block_label in &sorted_block_labels {
-            let block = cfg.blocks.get(block_label).expect("Block label not found in CFG");
+            let block = cfg
+                .blocks
+                .get(block_label)
+                .expect("Block label not found in CFG");
 
             // Emit the block label
             self.add(format!("{}:", block_label));
@@ -101,7 +110,6 @@ impl Backend for Codegen {
                             self.emit_phi_moves(block_label, else_label, cfg, &resolve);
                             // Emit moves for the 'then' edge
                             self.emit_phi_moves(block_label, then_label, cfg, &resolve);
-
                         }
                         Instr::Ret { .. } => {
                             // No successors, no Phi moves needed.
@@ -111,7 +119,10 @@ impl Backend for Codegen {
                             // This might indicate fallthrough, which should ideally be an explicit Jump.
                             // If fallthrough is intended, find the next block label and emit Phi moves.
                             // For now, assume explicit terminators are required by the CFG.
-                            eprintln!("Warning: Block '{}' ends with non-terminator instruction: {:?}", block_label, instr);
+                            eprintln!(
+                                "Warning: Block '{}' ends with non-terminator instruction: {:?}",
+                                block_label, instr
+                            );
                         }
                     }
                 }
@@ -145,9 +156,9 @@ impl Backend for Codegen {
                                     // Swap using another register, e.g., %r11 (caller-saved, less likely used)
                                     let temp_reg = "%r11";
                                     self.add(format!("movq {}, {}", rax, temp_reg)); // Save divisor
-                                    self.add(format!("movq {}, {}", l, rax));    // Move dividend to %rax
+                                    self.add(format!("movq {}, {}", l, rax)); // Move dividend to %rax
                                     self.add("cqto");
-                                    self.add(format!("idivq {}", temp_reg));     // Divide by saved divisor
+                                    self.add(format!("idivq {}", temp_reg)); // Divide by saved divisor
                                 }
                                 // General case: Use %r10, %r11 as temps
                                 else {
@@ -183,27 +194,27 @@ impl Backend for Codegen {
 
                                 // Handle shifts: requires count in %cl or immediate
                                 if *op == Op::Shl || *op == Op::Shr {
-                                     // If right operand is a constant immediate, use that directly
-                                     // Need to check if 'r' resolves to an immediate value - requires more info
-                                     // For now, assume 'r' is a register/memory, move to %cl
-                                     let cl = "%cl";
-                                     self.move_memory(&r, cl); // Move count to %cl
-                                     self.move_memory(&l, &d); // Move value to destination
-                                     self.add(format!("{} {}, {}", op_instr, cl, d)); // Shift dest by %cl
+                                    // If right operand is a constant immediate, use that directly
+                                    // Need to check if 'r' resolves to an immediate value - requires more info
+                                    // For now, assume 'r' is a register/memory, move to %cl
+                                    let cl = "%cl";
+                                    self.move_memory(&r, cl); // Move count to %cl
+                                    self.move_memory(&l, &d); // Move value to destination
+                                    self.add(format!("{} {}, {}", op_instr, cl, d)); // Shift dest by %cl
                                 }
                                 // Handle multiplication where src and dest can be different
                                 else if *op == Op::Mul {
-                                     // imul src, dest (dest = dest * src)
-                                     // imul src (rax = rax * src, result in rdx:rax) - less useful here
-                                     // imul src, reg (reg = reg * src)
-                                     // imul imm, src, dest (dest = src * imm)
-                                     self.move_memory(&l, &d); // Move left to destination
-                                     self.add(format!("{} {}, {}", op_instr, r, d)); // d = d * r
+                                    // imul src, dest (dest = dest * src)
+                                    // imul src (rax = rax * src, result in rdx:rax) - less useful here
+                                    // imul src, reg (reg = reg * src)
+                                    // imul imm, src, dest (dest = src * imm)
+                                    self.move_memory(&l, &d); // Move left to destination
+                                    self.add(format!("{} {}, {}", op_instr, r, d)); // d = d * r
                                 }
                                 // Handle Add, Sub, Or, And
                                 else {
-                                     self.move_memory(&l, &d); // Move left to destination
-                                     self.add(format!("{} {}, {}", op_instr, r, d)); // d = d op r
+                                    self.move_memory(&l, &d); // Move left to destination
+                                    self.add(format!("{} {}, {}", op_instr, r, d)); // d = d op r
                                 }
                             }
                         }
@@ -266,7 +277,10 @@ impl Backend for Codegen {
                         // Move arguments into registers
                         for (idx, arg_ssa) in args.iter().enumerate() {
                             if idx >= arg_regs.len() {
-                                panic!("Codegen: More than 6 arguments not yet supported for call to '{}'", target);
+                                panic!(
+                                    "Codegen: More than 6 arguments not yet supported for call to '{}'",
+                                    target
+                                );
                             }
                             let arg_loc = resolve(arg_ssa);
                             let target_reg = arg_regs[idx];
@@ -312,8 +326,7 @@ impl Backend for Codegen {
                     Instr::FuncParam { .. } => {
                         // No assembly generated for FuncParam itself.
                         // Handled by register allocator assigning parameter registers/stack slots.
-                    }
-                    // Handle other instructions if any
+                    } // Handle other instructions if any
                 } // End match instr
             } // End loop instructions in block
         } // End loop blocks in CFG
@@ -363,18 +376,18 @@ impl Codegen {
 
                         // Check if source and destination are the same (common after reg alloc)
                         if dest_loc != src_loc {
-                             eprintln!(
-                                 "Phi Move (at end of {} for edge to {}): {} <- {}",
-                                 current_block_label, target_block_label, dest_loc, src_loc
-                             );
+                            eprintln!(
+                                "Phi Move (at end of {} for edge to {}): {} <- {}",
+                                current_block_label, target_block_label, dest_loc, src_loc
+                            );
                             self.move_memory(&src_loc, &dest_loc);
                         }
                     } else {
-                         // This case should ideally not happen if the CFG and Phi nodes are consistent
-                         eprintln!(
-                             "Warning: Phi node in block '{}' has no edge from predecessor '{}'. Phi: {:?}",
-                             target_block_label, current_block_label, instr
-                         );
+                        // This case should ideally not happen if the CFG and Phi nodes are consistent
+                        eprintln!(
+                            "Warning: Phi node in block '{}' has no edge from predecessor '{}'. Phi: {:?}",
+                            target_block_label, current_block_label, instr
+                        );
                     }
                 } else {
                     // Phi nodes only appear at the beginning of a block.
@@ -382,13 +395,12 @@ impl Codegen {
                 }
             }
         } else {
-             eprintln!(
-                 "Warning: Target block '{}' for Phi moves not found in CFG.",
-                 target_block_label
-             );
+            eprintln!(
+                "Warning: Target block '{}' for Phi moves not found in CFG.",
+                target_block_label
+            );
         }
     }
-
 
     // Move data between registers and/or memory, handling memory-to-memory restriction.
     fn move_memory(&mut self, src: &str, dest: &str) {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::optimizer::passes::pass::Pass;
-use crate::optimizer::{Instr, Op, CFG, BasicBlock}; // Added CFG, BasicBlock
+use crate::optimizer::{BasicBlock, CFG, Instr, Op}; // Added CFG, BasicBlock
 use indexmap::IndexMap; // Assuming CFG uses IndexMap
 
 /// Algebraic Simplification Pass (CFG Version)
@@ -25,7 +25,8 @@ impl Pass for AlgebraicSimplification {
             // Track constants locally within this block
             let mut constants: HashMap<String, i64> = HashMap::new();
 
-            for instr in block.instrs { // Iterate over original instructions
+            for instr in block.instrs {
+                // Iterate over original instructions
                 match instr {
                     Instr::Const(ref name, val) => {
                         constants.insert(name.clone(), val);
@@ -38,36 +39,52 @@ impl Pass for AlgebraicSimplification {
 
                         match op {
                             Op::Add => {
-                                if right_val == Some(0) { // x + 0 => x
-                                    simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
-                                } else if left_val == Some(0) { // 0 + x => x
-                                    simplified_instr = Some(Instr::Assign(dest.clone(), right.clone()));
+                                if right_val == Some(0) {
+                                    // x + 0 => x
+                                    simplified_instr =
+                                        Some(Instr::Assign(dest.clone(), left.clone()));
+                                } else if left_val == Some(0) {
+                                    // 0 + x => x
+                                    simplified_instr =
+                                        Some(Instr::Assign(dest.clone(), right.clone()));
                                 }
                             }
                             Op::Sub => {
-                                if right_val == Some(0) { // x - 0 => x
-                                    simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
-                                } else if left == right { // x - x => 0
+                                if right_val == Some(0) {
+                                    // x - 0 => x
+                                    simplified_instr =
+                                        Some(Instr::Assign(dest.clone(), left.clone()));
+                                } else if left == right {
+                                    // x - x => 0
                                     simplified_instr = Some(Instr::Const(dest.clone(), 0));
                                 }
                             }
                             Op::Mul => {
-                                if right_val == Some(1) { // x * 1 => x
-                                    simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
-                                } else if left_val == Some(1) { // 1 * x => x
-                                    simplified_instr = Some(Instr::Assign(dest.clone(), right.clone()));
-                                } else if right_val == Some(0) || left_val == Some(0) { // x * 0 or 0 * x => 0
+                                if right_val == Some(1) {
+                                    // x * 1 => x
+                                    simplified_instr =
+                                        Some(Instr::Assign(dest.clone(), left.clone()));
+                                } else if left_val == Some(1) {
+                                    // 1 * x => x
+                                    simplified_instr =
+                                        Some(Instr::Assign(dest.clone(), right.clone()));
+                                } else if right_val == Some(0) || left_val == Some(0) {
+                                    // x * 0 or 0 * x => 0
                                     simplified_instr = Some(Instr::Const(dest.clone(), 0));
                                 }
                             }
                             Op::Div => {
-                                if right_val == Some(1) { // x / 1 => x
-                                    simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
+                                if right_val == Some(1) {
+                                    // x / 1 => x
+                                    simplified_instr =
+                                        Some(Instr::Assign(dest.clone(), left.clone()));
                                 }
                             }
                             Op::Shl | Op::Shr => {
-                                if right_val == Some(0) { // x << 0 => x, x >> 0 => x
-                                    simplified_instr = Some(Instr::Assign(dest.clone(), left.clone()));
+                                if right_val == Some(0) {
+                                    // x << 0 => x, x >> 0 => x
+                                    simplified_instr =
+                                        Some(Instr::Assign(dest.clone(), left.clone()));
                                 }
                             }
                             _ => {} // No other simplifications implemented
@@ -103,10 +120,13 @@ impl Pass for AlgebraicSimplification {
                         optimized_instrs.push(instr.clone());
                     }
                     // Instructions that define a register invalidate it in the constants map
-                    Instr::Cmp(ref name, ..) |
-                    Instr::Phi(ref name, ..) |
-                    Instr::Call { result: Some(ref name), .. } |
-                    Instr::FuncParam { ref name, .. } => {
+                    Instr::Cmp(ref name, ..)
+                    | Instr::Phi(ref name, ..)
+                    | Instr::Call {
+                        result: Some(ref name),
+                        ..
+                    }
+                    | Instr::FuncParam { ref name, .. } => {
                         constants.remove(name); // Use 'name' for FuncParam
                         optimized_instrs.push(instr.clone());
                     }
@@ -145,173 +165,267 @@ impl Pass for AlgebraicSimplification {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::{Op};
+    use crate::optimizer::Op;
     use crate::optimizer::passes::test_helpers::*;
 
     #[test]
     fn test_add_zero_cfg() {
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c0", 0),
-                assign("t1", "x"), // Assume x defined before entry
-                binop("t2", "t1", Op::Add, "c0"), // t2 = t1 + 0
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c0", 0),
+                    assign("t1", "x"), // Assume x defined before entry
+                    binop("t2", "t1", Op::Add, "c0"), // t2 = t1 + 0
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(cfg);
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c0", 0),
-                assign("t1", "x"),
-                assign("t2", "t1"), // Simplified
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c0", 0),
+                    assign("t1", "x"),
+                    assign("t2", "t1"), // Simplified
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
-        assert_eq!(optimized.blocks["entry"].instrs, expected.blocks["entry"].instrs);
+        assert_eq!(
+            optimized.blocks["entry"].instrs,
+            expected.blocks["entry"].instrs
+        );
     }
 
     #[test]
     fn test_sub_self_cfg() {
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                assign("t1", "x"),
-                binop("t2", "t1", Op::Sub, "t1"), // t2 = t1 - t1
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    assign("t1", "x"),
+                    binop("t2", "t1", Op::Sub, "t1"), // t2 = t1 - t1
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(cfg);
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                assign("t1", "x"),
-                cnst("t2", 0), // Simplified
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    assign("t1", "x"),
+                    cnst("t2", 0), // Simplified
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
-        assert_eq!(optimized.blocks["entry"].instrs, expected.blocks["entry"].instrs);
+        assert_eq!(
+            optimized.blocks["entry"].instrs,
+            expected.blocks["entry"].instrs
+        );
     }
 
-     #[test]
+    #[test]
     fn test_mul_one_cfg() {
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c1", 1),
-                assign("t1", "x"),
-                binop("t2", "t1", Op::Mul, "c1"), // t2 = t1 * 1
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c1", 1),
+                    assign("t1", "x"),
+                    binop("t2", "t1", Op::Mul, "c1"), // t2 = t1 * 1
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(cfg);
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c1", 1),
-                assign("t1", "x"),
-                assign("t2", "t1"), // Simplified
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c1", 1),
+                    assign("t1", "x"),
+                    assign("t2", "t1"), // Simplified
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
-        assert_eq!(optimized.blocks["entry"].instrs, expected.blocks["entry"].instrs);
+        assert_eq!(
+            optimized.blocks["entry"].instrs,
+            expected.blocks["entry"].instrs
+        );
     }
 
     #[test]
     fn test_mul_zero_cfg() {
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c0", 0),
-                assign("t1", "x"),
-                binop("t2", "t1", Op::Mul, "c0"), // t2 = t1 * 0
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c0", 0),
+                    assign("t1", "x"),
+                    binop("t2", "t1", Op::Mul, "c0"), // t2 = t1 * 0
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(cfg);
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c0", 0),
-                assign("t1", "x"),
-                cnst("t2", 0), // Simplified
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c0", 0),
+                    assign("t1", "x"),
+                    cnst("t2", 0), // Simplified
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
-        assert_eq!(optimized.blocks["entry"].instrs, expected.blocks["entry"].instrs);
+        assert_eq!(
+            optimized.blocks["entry"].instrs,
+            expected.blocks["entry"].instrs
+        );
     }
 
     #[test]
     fn test_shift_zero_cfg() {
-         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c0", 0),
-                assign("t1", "x"),
-                binop("t2", "t1", Op::Shl, "c0"), // t2 = t1 << 0
-                binop("t3", "t1", Op::Shr, "c0"), // t3 = t1 >> 0
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+        let cfg = create_test_cfg(vec![
+            (
+                "entry",
+                vec![
+                    cnst("c0", 0),
+                    assign("t1", "x"),
+                    binop("t2", "t1", Op::Shl, "c0"), // t2 = t1 << 0
+                    binop("t3", "t1", Op::Shr, "c0"), // t3 = t1 >> 0
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(cfg);
         let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c0", 0),
-                assign("t1", "x"),
-                assign("t2", "t1"), // Simplified
-                assign("t3", "t1"), // Simplified
-                jump("exit"),
-            ], vec![], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c0", 0),
+                    assign("t1", "x"),
+                    assign("t2", "t1"), // Simplified
+                    assign("t3", "t1"), // Simplified
+                    jump("exit"),
+                ],
+                vec![],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["entry"], vec![]),
         ]);
-        assert_eq!(optimized.blocks["entry"].instrs, expected.blocks["entry"].instrs);
+        assert_eq!(
+            optimized.blocks["entry"].instrs,
+            expected.blocks["entry"].instrs
+        );
     }
 
     #[test]
     fn test_multiple_blocks_cfg_algebraic() {
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("c0", 0),
-                cnst("c1", 1),
-                assign("x", "c1"), // x = 1
-                binop("y", "x", Op::Add, "c0"), // y = x + 0 => y = x
-                jump("next"),
-            ], vec![], vec!["next"]),
-            ("next", vec![
-                assign("z", "y"), // z = y (which is x, which is 1)
-                binop("a", "z", Op::Mul, "c1"), // a = z * 1 => a = z
-                binop("b", "a", Op::Sub, "a"), // b = a - a => b = 0
-                jump("exit"),
-            ], vec!["entry"], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c0", 0),
+                    cnst("c1", 1),
+                    assign("x", "c1"),              // x = 1
+                    binop("y", "x", Op::Add, "c0"), // y = x + 0 => y = x
+                    jump("next"),
+                ],
+                vec![],
+                vec!["next"],
+            ),
+            (
+                "next",
+                vec![
+                    assign("z", "y"),               // z = y (which is x, which is 1)
+                    binop("a", "z", Op::Mul, "c1"), // a = z * 1 => a = z
+                    binop("b", "a", Op::Sub, "a"),  // b = a - a => b = 0
+                    jump("exit"),
+                ],
+                vec!["entry"],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["next"], vec![]),
         ]);
         let pass = AlgebraicSimplification;
         let optimized = pass.optimize(cfg);
         let expected = create_test_cfg(vec![
-             ("entry", vec![
-                cnst("c0", 0),
-                cnst("c1", 1),
-                assign("x", "c1"),
-                assign("y", "x"), // Simplified
-                jump("next"),
-            ], vec![], vec!["next"]),
-            ("next", vec![
-                assign("z", "y"),
-                assign("a", "z"), // Simplified
-                cnst("b", 0), // Simplified
-                jump("exit"),
-            ], vec!["entry"], vec!["exit"]),
+            (
+                "entry",
+                vec![
+                    cnst("c0", 0),
+                    cnst("c1", 1),
+                    assign("x", "c1"),
+                    assign("y", "x"), // Simplified
+                    jump("next"),
+                ],
+                vec![],
+                vec!["next"],
+            ),
+            (
+                "next",
+                vec![
+                    assign("z", "y"),
+                    assign("a", "z"), // Simplified
+                    cnst("b", 0),     // Simplified
+                    jump("exit"),
+                ],
+                vec!["entry"],
+                vec!["exit"],
+            ),
             ("exit", vec![ret()], vec!["next"], vec![]),
         ]);
 
-        assert_eq!(optimized.blocks["entry"].instrs, expected.blocks["entry"].instrs, "Block 'entry' mismatch");
-        assert_eq!(optimized.blocks["next"].instrs, expected.blocks["next"].instrs, "Block 'next' mismatch");
-        assert_eq!(optimized.blocks["exit"].instrs, expected.blocks["exit"].instrs, "Block 'exit' mismatch");
+        assert_eq!(
+            optimized.blocks["entry"].instrs, expected.blocks["entry"].instrs,
+            "Block 'entry' mismatch"
+        );
+        assert_eq!(
+            optimized.blocks["next"].instrs, expected.blocks["next"].instrs,
+            "Block 'next' mismatch"
+        );
+        assert_eq!(
+            optimized.blocks["exit"].instrs, expected.blocks["exit"].instrs,
+            "Block 'exit' mismatch"
+        );
     }
 }

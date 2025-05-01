@@ -135,58 +135,65 @@ mod tests {
 
     #[test]
     fn test_optimizer() {
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 2),
                 cnst("t1", 3),
                 binop("t2", "t0", Op::Add, "t1"),
                 cnst("t_unused", 999),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let optimizer = Optimizer;
         let optimized = optimizer.run_all(cfg);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t2", 5),
-                print("t2"),
-            ], vec![], vec![]),
-        ]);
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![cnst("t2", 5), print("t2")],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(optimized.blocks, expected.blocks);
     }
 
     #[test]
     fn test_optimizer_relational_operators() {
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 10),
                 cnst("t1", 20),
                 cmp("t2", "t0", CmpOp::Lt, "t1"),
                 cnst("t_unused", 999),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let optimizer = Optimizer;
         let optimized = optimizer.run_all(cfg);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t2", 1),
-                print("t2"),
-            ], vec![], vec![]),
-        ]);
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![cnst("t2", 1), print("t2")],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(optimized.blocks, expected.blocks);
     }
 
     #[test]
     fn test_optimizer_full_chain_folding() {
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 4),
                 cnst("t1", 5),
                 binop("t2", "t0", Op::Add, "t1"),
@@ -196,18 +203,20 @@ mod tests {
                 cmp("t6", "t4", CmpOp::Eq, "t5"),
                 cnst("t_unused", 999),
                 print("t6"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let optimizer = Optimizer;
         let optimized = optimizer.run_all(cfg);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t6", 1),
-                print("t6"),
-            ], vec![], vec![]),
-        ]);
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![cnst("t6", 1), print("t6")],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(optimized.blocks, expected.blocks);
     }

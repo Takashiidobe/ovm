@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
-use crate::optimizer::{CFG, Instr};
 use super::pass::Pass;
+use crate::optimizer::{CFG, Instr};
+use std::collections::{HashMap, HashSet};
 
 /// Dead code elimination optimization pass
 /// This pass removes instructions that don't contribute to program output.
@@ -55,11 +55,11 @@ impl DeadCodeElimination {
         if Some(label.to_string()) == cfg.current_block {
             return true;
         }
-        
+
         // Check if any other block branches to this one
-        cfg.blocks.values().any(|block| {
-            block.succs.contains(&label.to_string())
-        })
+        cfg.blocks
+            .values()
+            .any(|block| block.succs.contains(&label.to_string()))
     }
 }
 
@@ -83,11 +83,15 @@ impl Pass for DeadCodeElimination {
                 }
 
                 // Determine if instruction is essential
-                let is_essential = block_essential && match instr {
-                    Instr::Print(_) | Instr::BranchIf(_, _, _) | Instr::Jump(_) 
-                    | Instr::Call { .. } | Instr::Ret { .. } => true,
-                    _ => false,
-                };
+                let is_essential = block_essential
+                    && match instr {
+                        Instr::Print(_)
+                        | Instr::BranchIf(_, _, _)
+                        | Instr::Jump(_)
+                        | Instr::Call { .. }
+                        | Instr::Ret { .. } => true,
+                        _ => false,
+                    };
 
                 if is_essential {
                     block_essentials.insert(idx);
@@ -108,13 +112,15 @@ impl Pass for DeadCodeElimination {
         // Propagate liveness backward
         while let Some((block_label, var)) = worklist.pop() {
             if let Some((def_block, def_idx)) = var_defs.get(&var) {
-                let block_essentials = essential_instrs
-                    .entry(def_block.clone())
-                    .or_default();
-                
+                let block_essentials = essential_instrs.entry(def_block.clone()).or_default();
+
                 if block_essentials.insert(*def_idx) {
                     // Definition became essential, add its uses to worklist
-                    if let Some(def_instr) = cfg.blocks.get(def_block).and_then(|b| b.instrs.get(*def_idx)) {
+                    if let Some(def_instr) = cfg
+                        .blocks
+                        .get(def_block)
+                        .and_then(|b| b.instrs.get(*def_idx))
+                    {
                         for used_var in Self::get_instr_uses(def_instr) {
                             for used_var in Self::get_instr_uses(def_instr) {
                                 if live_vars.insert(used_var.clone()) {
@@ -130,7 +136,10 @@ impl Pass for DeadCodeElimination {
         // Filter out dead instructions
         for (label, block) in cfg.blocks.iter_mut() {
             if let Some(essential_indices) = essential_instrs.get(label) {
-                block.instrs = block.instrs.iter().enumerate()
+                block.instrs = block
+                    .instrs
+                    .iter()
+                    .enumerate()
                     .filter(|(i, _)| essential_indices.contains(i))
                     .map(|(_, instr)| instr.clone())
                     .collect();
@@ -155,52 +164,61 @@ mod tests {
 
     #[test]
     fn test_dead_code_elimination() {
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 10),
                 cnst("t1", 20),
                 binop("t2", "t0", Op::Add, "t1"),
-                cnst("t_unused", 999),  // dead
+                cnst("t_unused", 999), // dead
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let pass = DeadCodeElimination;
         let optimized = pass.optimize(cfg);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("t0", 10),
                 cnst("t1", 20),
                 binop("t2", "t0", Op::Add, "t1"),
                 print("t2"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(optimized, expected);
     }
 
     #[test]
     fn test_dead_code_elimination_chain() {
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t0", 5),   // dead
-                cnst("t1", 10),  // dead
-                binop("t2", "t0", Op::Add, "t1"),  // dead
-                cnst("t5", 20),  // used
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
+                cnst("t0", 5),                    // dead
+                cnst("t1", 10),                   // dead
+                binop("t2", "t0", Op::Add, "t1"), // dead
+                cnst("t5", 20),                   // used
                 print("t5"),
-            ], vec![], vec![]),
-        ]);
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let pass = DeadCodeElimination;
         let optimized = pass.optimize(cfg);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("t5", 20),
-                print("t5"),
-            ], vec![], vec![]),
-        ]);
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![cnst("t5", 20), print("t5")],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(optimized, expected);
     }
@@ -208,21 +226,25 @@ mod tests {
     #[test]
     fn test_dead_block_elimination() {
         let cfg = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("cond", 0),
-                branch("cond", "dead", "live"),
-            ], vec![], vec!["dead", "live"]),
-            ("dead", vec![
-                cnst("unused", 1),
-                print("unused"),
-            ], vec!["entry"], vec!["exit"]),
-            ("live", vec![
-                cnst("used", 2),
-                print("used"),
-            ], vec!["entry"], vec!["exit"]),
-            ("exit", vec![
-                ret(),
-            ], vec!["dead", "live"], vec![]),
+            (
+                "entry",
+                vec![cnst("cond", 0), branch("cond", "dead", "live")],
+                vec![],
+                vec!["dead", "live"],
+            ),
+            (
+                "dead",
+                vec![cnst("unused", 1), print("unused")],
+                vec!["entry"],
+                vec!["exit"],
+            ),
+            (
+                "live",
+                vec![cnst("used", 2), print("used")],
+                vec!["entry"],
+                vec!["exit"],
+            ),
+            ("exit", vec![ret()], vec!["dead", "live"], vec![]),
         ]);
 
         let pass = DeadCodeElimination;
@@ -230,28 +252,34 @@ mod tests {
 
         assert!(optimized.blocks.contains_key("live"));
         assert!(optimized.blocks.contains_key("exit"));
-        assert_eq!(optimized.blocks.get("dead").map(|b| b.instrs.len()), Some(0));
+        assert_eq!(
+            optimized.blocks.get("dead").map(|b| b.instrs.len()),
+            Some(0)
+        );
     }
 
     #[test]
     fn test_keep_essential_calls() {
-        let cfg = create_test_cfg(vec![
-            ("entry", vec![
+        let cfg = create_test_cfg(vec![(
+            "entry",
+            vec![
                 cnst("arg", 42),
-                call("foo", vec!["arg"], Some("result")),  // call is essential
-                cnst("unused", 99),  // dead
-            ], vec![], vec![]),
-        ]);
+                call("foo", vec!["arg"], Some("result")), // call is essential
+                cnst("unused", 99),                       // dead
+            ],
+            vec![],
+            vec![],
+        )]);
 
         let pass = DeadCodeElimination;
         let optimized = pass.optimize(cfg);
 
-        let expected = create_test_cfg(vec![
-            ("entry", vec![
-                cnst("arg", 42),
-                call("foo", vec!["arg"], Some("result")),
-            ], vec![], vec![]),
-        ]);
+        let expected = create_test_cfg(vec![(
+            "entry",
+            vec![cnst("arg", 42), call("foo", vec!["arg"], Some("result"))],
+            vec![],
+            vec![],
+        )]);
 
         assert_eq!(optimized, expected);
     }
