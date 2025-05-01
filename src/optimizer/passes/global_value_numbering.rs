@@ -286,18 +286,27 @@ impl GlobalValueNumbering {
                     }
                 }
                 Instr::Phi(dest, _) => {
-                    // Phi node handling is complex in GVN.
-                    // A simple approach is to always assign a new VN to Phi results
-                    // as their value depends on the control flow path taken.
-                    // More advanced GVN might try to equate Phis if their inputs match
-                    // under all predecessor paths, but that requires more complex state merging.
-                    // For now, let's ensure Phi destinations get a VN but don't participate
-                    // in expression key lookups directly based on sources.
-                    let vn = *next_vn;
-                    *next_vn += 1;
-                    current_var_to_vn.insert(dest.clone(), vn);
-                    global_vn_to_canonical_var.insert(vn, dest.clone());
-                    // Keep the original Phi instruction; its resolution happens later?
+                    // Phi nodes are handled by the merge logic determining the entry state.
+                    // The VN for the destination 'dest' should already be present in
+                    // 'current_var_to_vn' (copied from 'entry_var_to_vn').
+                    // If it's not present (e.g., due to incomplete merge or entry state),
+                    // assign a new VN as a fallback.
+                    if !current_var_to_vn.contains_key(dest) {
+                         // This case might indicate an issue with the merge logic or initial state,
+                         // but assigning a new VN here prevents crashes and might be necessary
+                         // if a variable truly first appears in a Phi node within a loop.
+                         eprintln!(
+                            "Warning: GVN destination ('{}') missing VN for Phi. Assigning new VN.",
+                            dest
+                         );
+                         let vn = *next_vn;
+                         *next_vn += 1;
+                         current_var_to_vn.insert(dest.clone(), vn);
+                         global_vn_to_canonical_var.insert(vn, dest.clone());
+                    }
+                    // We don't need to update current_var_to_vn here if it already exists
+                    // from the entry state merge.
+                    // We *must* keep the original Phi instruction for the CFG structure.
                     new_instrs.push(instr.clone());
                 }
                 _ => {
